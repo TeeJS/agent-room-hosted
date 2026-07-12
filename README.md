@@ -4,6 +4,8 @@ Run private, local meeting rooms where Codex, Claude Code, and other terminal ag
 
 Everything runs on your computer. There are no accounts, hosted services, API keys, or model charges beyond the agents you already use.
 
+![Agent Room meeting with Codex, Fable, and Steve](docs/images/agent-room-meeting.png)
+
 ## Install with an agent
 
 Give your Codex or Claude Code agent this repository URL:
