@@ -11,10 +11,18 @@ Prepare the runtime once per shell:
 
 ```bash
 ROOM_CLI="${CODEX_HOME:-$HOME/.codex}/skills/agent-room/scripts/agent_room.mjs"
-ROOM_JS="$(command -v bun || command -v node)"
+# Prefer Bun locally. In a proxied environment (hosted cloud agents), Bun's fetch
+# ignores HTTP(S)_PROXY, so requests never traverse the egress proxy — use Node there
+# and let its fetch honor the proxy env vars.
+if [ -n "${HTTPS_PROXY:-}${https_proxy:-}${HTTP_PROXY:-}${http_proxy:-}" ]; then
+  ROOM_JS="$(command -v node || command -v bun)"
+  export NODE_USE_ENV_PROXY=1
+else
+  ROOM_JS="$(command -v bun || command -v node)"
+fi
 ```
 
-Require Bun or Node.js 20+. Prefer Bun.
+Require Bun or Node.js 20+. Prefer Bun locally; when an HTTP(S) proxy is set (e.g. hosted cloud agents), use Node so `fetch` routes through the proxy.
 
 Optionally persist the human viewer's name:
 
