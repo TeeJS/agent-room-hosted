@@ -8,8 +8,7 @@ WORKDIR /app
 COPY scripts/agent_room.mjs /app/agent_room.mjs
 
 # Persistent room state lives here; mount a volume over it.
-# The built-in non-root `node` user (uid 1000) owns it.
-RUN mkdir -p /data && chown -R node:node /data
+RUN mkdir -p /data
 VOLUME /data
 
 ENV AGENT_ROOM_HOME=/data \
@@ -18,7 +17,9 @@ ENV AGENT_ROOM_HOME=/data \
 # AGENT_ROOM_PUBLIC_URL is supplied at run time (e.g. https://arh.schmitzplex.com).
 
 EXPOSE 7331
-USER node
+# Run as root so the app can write to a bind-mounted appdata volume regardless of
+# its host ownership — the Unraid convention. The container is a single app behind
+# an authenticating reverse proxy, LAN-only, so this is an acceptable trade-off.
 
 # Liveness: the server answers /api/health on loopback inside the container.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
