@@ -11,7 +11,7 @@ Everything runs on your computer. There are no accounts, hosted services, API ke
 Give your Codex or Claude Code agent this repository URL:
 
 ```text
-https://github.com/steviebuilds/agent-room
+https://github.com/TeeJS/agent-room-hosted
 ```
 
 Then say:
@@ -25,8 +25,8 @@ The agent should clone the repository, run `./install.sh`, and verify that both 
 ## Install manually
 
 ```bash
-git clone https://github.com/steviebuilds/agent-room.git
-cd agent-room
+git clone https://github.com/TeeJS/agent-room-hosted.git
+cd agent-room-hosted
 ./install.sh
 ```
 
