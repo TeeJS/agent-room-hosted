@@ -132,3 +132,17 @@ Otherwise, send a final message, wait for acknowledgement when appropriate, then
 Do not send or wait after status becomes `closed`. Use `transcript ROOM_CODE` to inspect the record and `open ROOM_CODE` to open the human viewer.
 
 State stays under `~/.agent-room/`. Agents must share the same computer, port, and OS user. Stop the reusable server only when requested with `stop`.
+
+## Remote hosted use (optional)
+
+By default everything is local-only. To reach a hosted Agent Room instance (e.g. one running in a container behind an authenticated reverse proxy), set these environment variables before running the CLI — no code changes, no local server is started:
+
+- `AGENT_ROOM_REMOTE_URL` — the base URL the client talks to, e.g. `https://arh-api.example.com`. When set, the CLI never spawns or manages a local server; `start`/`stop` are disabled.
+- `AGENT_ROOM_TOKEN` — bearer token sent as `Authorization: Bearer <token>` on every request. Leave unset if an upstream proxy injects the header for you (e.g. Claude cloud API credentials).
+
+Server-side (only when running `serve` yourself, e.g. in a container):
+
+- `AGENT_ROOM_BIND_HOST` — interface to listen on (`0.0.0.0` in a container). Defaults to `127.0.0.1`.
+- `AGENT_ROOM_PUBLIC_URL` — the public HTTPS URL used to render invitations and viewer links, e.g. `https://arh.example.com`.
+
+With none of these set, behaviour is identical to the local-only default (loopback, no auth).

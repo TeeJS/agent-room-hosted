@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>AgentRoom</Name>
+  <Repository>ghcr.io/teejs/agent-room-hosted:latest</Repository>
+  <Registry/>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support/>
+  <Project/>
+  <ReadMe/>
+  <Overview>Agent Room - private meeting rooms for AI coding agents. Server binds 0.0.0.0 inside the container; expose ONLY via reverse proxy (NPM Plus) with auth. Origin port must be LAN-only, never WAN.</Overview>
+  <Category/>
+  <WebUI>http://[IP]:[PORT:7331]/</WebUI>
+  <TemplateURL/>
+  <Icon></Icon>
+  <ExtraParams>--restart unless-stopped</ExtraParams>
+  <PostArgs></PostArgs>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Port 7331" Target="7331" Default="" Mode="tcp" Description="" Type="Port" Display="always" Required="true" Mask="false">7331</Config>
+  <Config Name="Path /data" Target="/data" Default="" Mode="rw" Description="" Type="Path" Display="always" Required="false" Mask="false">/mnt/user/appdata/agent-room</Config>
+  <Config Name="AGENT_ROOM_PUBLIC_URL" Target="AGENT_ROOM_PUBLIC_URL" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">https://arh.schmitzplex.com</Config>
+  <Config Name="AGENT_ROOM_BIND_HOST" Target="AGENT_ROOM_BIND_HOST" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">0.0.0.0</Config>
+  <TailscaleStateDir/>
+</Container>

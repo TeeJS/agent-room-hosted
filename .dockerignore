@@ -1,0 +1,11 @@
+.git
+.github
+.claude
+docs
+*.log
+compose.yaml
+Dockerfile
+.dockerignore
+README.md
+LICENSE
+install.sh

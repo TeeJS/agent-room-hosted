@@ -9,9 +9,20 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const HOST = process.env.AGENT_ROOM_HOST || "127.0.0.1";
 const PORT = Number(process.env.AGENT_ROOM_PORT || 7331);
-const BASE_URL = `http://${HOST}:${PORT}`;
+const stripTrailingSlash = (value) => value.replace(/\/+$/, "");
+// Legacy single-endpoint default; equals the historic BASE_URL when no new vars are set.
+const LEGACY_BASE = `http://${process.env.AGENT_ROOM_HOST || "127.0.0.1"}:${PORT}`;
+// BIND_HOST: what the server listens on (e.g. 0.0.0.0 inside a container).
+const BIND_HOST = process.env.AGENT_ROOM_BIND_HOST || process.env.AGENT_ROOM_HOST || "127.0.0.1";
+// PUBLIC_URL: how the server advertises itself (viewer links, invitations, health).
+const PUBLIC_URL = stripTrailingSlash(process.env.AGENT_ROOM_PUBLIC_URL || LEGACY_BASE);
+// REMOTE_URL: where the CLIENT sends requests (a hosted instance, or local loopback).
+const REMOTE_URL = stripTrailingSlash(process.env.AGENT_ROOM_REMOTE_URL || LEGACY_BASE);
+// TOKEN: bearer credential the client attaches; empty means no auth header (unchanged local behaviour).
+const TOKEN = process.env.AGENT_ROOM_TOKEN || "";
+// IS_REMOTE: when set, the client talks to a remote host and never manages a local server.
+const IS_REMOTE = Boolean(process.env.AGENT_ROOM_REMOTE_URL);
 const DATA_DIR = process.env.AGENT_ROOM_HOME || path.join(os.homedir(), ".agent-room");
 const STATE_PATH = path.join(DATA_DIR, "rooms.json");
 const CONFIG_PATH = path.join(DATA_DIR, "config.json");
@@ -81,9 +92,13 @@ function saveConfig(config) {
 }
 
 function makeCode() {
+  // 32-symbol Crockford-style alphabet (uppercase, URL-safe, omits I/L/O/0/1).
+  // 26 symbols * 5 bits = 130 bits of entropy — unguessable for a public host.
+  // Lookups are case-insensitive map-key reads with no format check, so both these
+  // long codes and any pre-existing short codes in rooms.json keep resolving.
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let value = "AM-";
-  for (let index = 0; index < 4; index += 1) value += chars[crypto.randomInt(chars.length)];
+  for (let index = 0; index < 26; index += 1) value += chars[crypto.randomInt(chars.length)];
   return value;
 }
 
@@ -114,11 +129,11 @@ function addressedTo(message, name) {
 function publicRoom(room) {
   const { next_message_id, ...visible } = room;
   visible.participants = room.participants.map(({ last_read_id, ...participant }) => participant);
-  return { ...visible, viewer_url: `${BASE_URL}/rooms/${room.code}`, invitation: invitation(room) };
+  return { ...visible, viewer_url: `${PUBLIC_URL}/rooms/${room.code}`, invitation: invitation(room) };
 }
 
 function invitation(room) {
-  return `Paste this to your other agents:\n\nUse the agent-room skill to join room: ${BASE_URL}/rooms/${room.code}`;
+  return `Paste this to your other agents:\n\nUse the agent-room skill to join room: ${PUBLIC_URL}/rooms/${room.code}`;
 }
 
 function notify(code) {
@@ -171,11 +186,11 @@ function waitForChange(code, seconds) {
 }
 
 async function route(request, response) {
-  const url = new URL(request.url, BASE_URL);
+  const url = new URL(request.url, PUBLIC_URL);
   const parts = url.pathname.split("/").filter(Boolean);
 
   if (request.method === "GET" && url.pathname === "/api/health") {
-    json(response, 200, { ok: true, version: VERSION, url: BASE_URL }); return;
+    json(response, 200, { ok: true, version: VERSION, url: PUBLIC_URL }); return;
   }
   if (request.method === "GET" && url.pathname === "/") {
     page(response, 200, landingPage()); return;
@@ -426,9 +441,9 @@ function startServer() {
   ensureDir();
   migrateState();
   const server = http.createServer((request, response) => route(request, response).catch((error) => json(response, 400, { error: error.message })));
-  server.listen(PORT, HOST, () => {
+  server.listen(PORT, BIND_HOST, () => {
     fs.writeFileSync(PID_PATH, String(process.pid));
-    process.stdout.write(`Agent Room ${VERSION} listening on ${BASE_URL}\n`);
+    process.stdout.write(`Agent Room ${VERSION} listening on ${BIND_HOST}:${PORT} (public: ${PUBLIC_URL})\n`);
   });
   const close = () => server.close(() => {
     try { if (fs.readFileSync(PID_PATH, "utf8").trim() === String(process.pid)) fs.unlinkSync(PID_PATH); } catch {}
@@ -441,17 +456,22 @@ function startServer() {
 async function api(method, endpoint, body, timeout = 35000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
+  // Build headers explicitly so the bearer is attached on every request (incl. GET/long-poll),
+  // not only when there's a JSON body. Never interpolate TOKEN into an error/log string.
+  const headers = {};
+  if (body) headers["content-type"] = "application/json";
+  if (TOKEN) headers["authorization"] = `Bearer ${TOKEN}`;
   try {
-    const response = await fetch(BASE_URL + endpoint, {
+    const response = await fetch(REMOTE_URL + endpoint, {
       method, signal: controller.signal,
-      headers: body ? { "content-type": "application/json" } : undefined,
+      headers,
       body: body ? JSON.stringify(body) : undefined,
     });
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || response.statusText);
     return value;
   } catch (error) {
-    if (error.name === "AbortError") throw new Error(`Request timed out at ${BASE_URL}`);
+    if (error.name === "AbortError") throw new Error(`Request timed out at ${REMOTE_URL}`);
     throw error;
   } finally { clearTimeout(timer); }
 }
@@ -488,7 +508,7 @@ async function ensureServer() {
     await new Promise((resolve) => setTimeout(resolve, 100));
     if (await healthy()) return;
   }
-  throw new Error(`Could not start Agent Room at ${BASE_URL}. See ${LOG_PATH}`);
+  throw new Error(`Could not start Agent Room at ${REMOTE_URL}. See ${LOG_PATH}`);
 }
 
 function argsOf(values) {
@@ -527,15 +547,19 @@ async function main() {
     if (!userName) throw new Error("--user-name cannot be empty");
     saveConfig({ ...loadConfig(), user_name: userName });
   }
-  if (command === "start") { await ensureServer(); console.log(`Agent Room is running at ${BASE_URL} for ${loadConfig().user_name || "User"}`); return; }
+  if (command === "start") {
+    if (IS_REMOTE) throw new Error("start manages a LOCAL Agent Room server and is unavailable when AGENT_ROOM_REMOTE_URL is set.");
+    await ensureServer(); console.log(`Agent Room is running at ${PUBLIC_URL} for ${loadConfig().user_name || "User"}`); return;
+  }
   if (command === "stop") {
+    if (IS_REMOTE) throw new Error("stop manages a LOCAL Agent Room server and is unavailable when AGENT_ROOM_REMOTE_URL is set.");
     if (!(await healthy())) { console.log("Agent Room is not running."); return; }
     const pid = Number(fs.readFileSync(PID_PATH, "utf8").trim());
     process.kill(pid, "SIGTERM");
     for (let index = 0; index < 40; index += 1) { await new Promise((resolve) => setTimeout(resolve, 100)); if (!(await healthy())) { console.log("Agent Room stopped."); return; } }
     throw new Error(`Agent Room process ${pid} did not stop cleanly`);
   }
-  await ensureServer();
+  if (!IS_REMOTE) await ensureServer();
   const roomCode = String(args._[0] || "").toUpperCase();
   if (command === "create") {
     const room = await api("POST", "/api/rooms", { title: required(args, "title"), objective: args.objective, name: args.name || "Host", user_name: args["user-name"] });

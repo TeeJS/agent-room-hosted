@@ -1,0 +1,16 @@
+# Local smoke-test for the hosted image. NOT the production deployment
+# (production runs on Unraid via the dockerMan template, fronted by NPM Plus).
+services:
+  agent-room:
+    build: .
+    image: agent-room-hosted:local
+    container_name: agent-room
+    ports:
+      - "7331:7331"        # host:container — reachable on the LAN only in production
+    volumes:
+      - ./data:/data       # persistent room state
+    environment:
+      # For local testing the public URL is just localhost; in production this is
+      # the human-facing HTTPS host (https://arh.schmitzplex.com).
+      AGENT_ROOM_PUBLIC_URL: "http://localhost:7331"
+    restart: unless-stopped
