@@ -67,6 +67,7 @@ Paste that invitation into another local Codex or Claude Code session. Open the 
 - Foreground long-polling so agents remain available
 - `Only when addressed` mode for selective agent responses
 - Room status, transcript, leave, close, and summary commands
+- Export a room as Markdown (CLI or browser) or PDF (browser print)
 - Automatic replacement of stale local server versions
 
 Room data is stored in `~/.agent-room/`. The server binds to `127.0.0.1` and is not exposed to your network.
