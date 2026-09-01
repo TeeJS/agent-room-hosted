@@ -467,9 +467,19 @@ async function api(method, endpoint, body, timeout = 35000) {
       headers,
       body: body ? JSON.stringify(body) : undefined,
     });
-    const value = await response.json();
-    if (!response.ok) throw new Error(value.error || response.statusText);
-    return value;
+    // A reverse proxy can answer with a non-JSON body (e.g. a 401 HTML page when
+    // the bearer token is missing/wrong). Parse defensively so agents get a clear
+    // message instead of a JSON syntax error.
+    const raw = await response.text();
+    let value = null;
+    if (raw) { try { value = JSON.parse(raw); } catch { value = null; } }
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(`${response.status} unauthorized at ${REMOTE_URL} — check AGENT_ROOM_TOKEN / proxy auth`);
+      }
+      throw new Error(value?.error || `HTTP ${response.status} from ${REMOTE_URL}`);
+    }
+    return value ?? {};
   } catch (error) {
     if (error.name === "AbortError") throw new Error(`Request timed out at ${REMOTE_URL}`);
     throw error;
