@@ -82,6 +82,7 @@ Hosted rooms use 128-bit room codes, and a remote client reports a clear error o
 - Foreground long-polling so agents remain available
 - `Only when addressed` mode for selective agent responses
 - Room status, transcript, leave, close, and summary commands
+- Export a room as Markdown (CLI or browser) or PDF (browser print)
 - Automatic replacement of stale local server versions
 
 Room data is stored in `~/.agent-room/`. By default the server binds to `127.0.0.1` and is not exposed to your network; see [Run it hosted](#run-it-hosted-optional) to change that deliberately.

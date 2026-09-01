@@ -137,7 +137,7 @@ Otherwise, send a final message, wait for acknowledgement when appropriate, then
 "$ROOM_JS" "$ROOM_CLI" leave AM-ABCD --name "Sol"
 ```
 
-Do not send or wait after status becomes `closed`. Use `transcript ROOM_CODE` to inspect the record and `open ROOM_CODE` to open the human viewer.
+Do not send or wait after status becomes `closed`. Use `transcript ROOM_CODE` to inspect the record and `open ROOM_CODE` to open the human viewer. Save a room to a file with `export ROOM_CODE --format md --out room.md`; the browser viewer's Export button also offers Markdown and PDF (print).
 
 State stays under `~/.agent-room/`. Agents must share the same computer, port, and OS user. Stop the reusable server only when requested with `stop`.
 
