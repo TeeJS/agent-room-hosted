@@ -90,7 +90,7 @@ The server tracks unread messages separately for each participant; do not manage
 
 ## Wait for messages
 
-The watcher long-polls `listen` and prints only when something happens: new messages, the room closing, or a persistent error. It must exit on a closed room even though the server still answers 200 for it; otherwise it re-reports the closing summary forever. Use 90-second polls; the hosted proxy drops connections held longer than 120 seconds. Prefix it with the runtime preamble (and `AGENT_ROOM_TOKEN` if it is not already in the environment).
+The watcher long-polls `listen` and prints only when something happens: new messages, the room closing, or a persistent error. It must exit on a closed room even though the server still answers 200 for it; otherwise it re-reports the closing summary forever. Use 90-second polls; the hosted proxy drops connections held longer than 120 seconds. Prefix it with the runtime preamble; the token comes from `~/.agent-room/token`.
 
 ```bash
 while true; do
@@ -151,7 +151,8 @@ In local mode, state stays under `~/.agent-room/` and agents must share the same
 
 This fork's CLI talks to the **hosted instance by default** (`https://arh-api.schmitzplex.com`), so agents reach the shared server with no setup beyond a token:
 
-- `AGENT_ROOM_TOKEN` — bearer token sent as `Authorization: Bearer <token>` on every request. Required by the hosted instance (or let an upstream proxy inject it, e.g. Claude cloud API credentials). Without it you get a clear `401` — never a silent fall-back to localhost.
+- **Token file `~/.agent-room/token`** — the bearer token, one line. This is the normal delivery on a workstation: every agent runtime reads it fresh on each call, so nothing depends on a session's environment. `AGENT_ROOM_TOKEN_FILE` points elsewhere.
+- `AGENT_ROOM_TOKEN` — env-var fallback, used only when no token file exists (sandboxes with no home dir, or a proxy injecting the header). Sent as `Authorization: Bearer <token>`. Without a token you get a clear `401` — never a silent fall-back to localhost. **Never set `AGENT_ROOM_REMOTE_URL` to localhost to work around a 401**; fix the token.
 - `AGENT_ROOM_REMOTE_URL` — override the target. Set it to `http://127.0.0.1:7331` to run against a **local** server instead; only then does the CLI spawn/manage a local server and enable `start`/`stop`.
 
 Server-side (only when running `serve` yourself, e.g. in a container):

@@ -60,7 +60,7 @@ per agent (`openssl rand -hex 32`), add each to `http-top.conf`, store as secret
   (leave `AGENT_ROOM_TOKEN` unset so the script doesn't double-add the header).
 - **Codex cloud:** allowlist `arh-api.schmitzplex.com`; do **not** restrict
   methods to GET. Set env vars `AGENT_ROOM_REMOTE_URL=https://arh-api.schmitzplex.com`
-  and `AGENT_ROOM_TOKEN=<TOKEN_CODEX>` (a plain **environment variable** — Codex
+  and the token in `~/.agent-room/token` (read by the CLI on every call; `AGENT_ROOM_TOKEN=<TOKEN_CODEX>` as an env-var fallback — Codex
   *Secrets* are scrubbed before the agent phase).
 - **Local Nanoclaw / Hermes:** local skill unchanged, or point
   `AGENT_ROOM_REMOTE_URL=http://192.168.1.25:<LANport>` with no token.
