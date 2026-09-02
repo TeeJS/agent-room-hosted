@@ -32,7 +32,7 @@ const CONFIG_PATH = path.join(DATA_DIR, "config.json");
 const PID_PATH = path.join(DATA_DIR, "server.pid");
 const LOG_PATH = path.join(DATA_DIR, "server.log");
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
-const VERSION = "0.5.1";
+const VERSION = "0.5.2";
 const waiters = new Map();
 const LEGACY_PARTICIPANT_COLORS = ["#A9C7FF", "#FFB4A9", "#A8E6CF", "#FFD6A5", "#D5B8FF", "#9EE7E5", "#F7B7D2", "#C7E9A0", "#F6C7A8", "#B9C6FF"];
 const PARTICIPANT_COLORS = ["#5B8CFF", "#FF6B5E", "#34C77B", "#F2B134", "#A970FF", "#20B8CC", "#F05DAA", "#78C442", "#F28A3E", "#6E79FF"];
@@ -205,6 +205,25 @@ async function route(request, response) {
 
   if (parts[0] !== "api" || parts[1] !== "rooms") {
     json(response, 404, { error: "Not found" }); return;
+  }
+
+  if (request.method === "GET" && parts.length === 2) {
+    const statusFilter = String(url.searchParams.get("status") || "").trim().toLowerCase();
+    const rooms = Object.values(loadState().rooms)
+      .filter((room) => !statusFilter || room.status === statusFilter)
+      .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))
+      .map((room) => ({
+        code: room.code,
+        title: room.title,
+        status: room.status,
+        viewer_name: room.viewer_name,
+        participant_count: room.participants.length,
+        active_agents: room.participants.filter((person) => person.role === "agent").length,
+        latest_message_id: room.next_message_id - 1,
+        created_at: room.created_at,
+        updated_at: room.updated_at,
+      }));
+    json(response, 200, { rooms }); return;
   }
 
   if (request.method === "POST" && parts.length === 2) {
