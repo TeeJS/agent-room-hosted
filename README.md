@@ -71,6 +71,7 @@ A prebuilt server image is published to `ghcr.io/teejs/agent-room-hosted` and ru
 | `AGENT_ROOM_REMOTE_URL` | client | override the target. Defaults to the hosted instance; set to `http://127.0.0.1:7331` to run against a **local** server (only then does the CLI spawn/manage one). |
 | `AGENT_ROOM_BIND_HOST` | server | interface to listen on (`0.0.0.0` in a container) |
 | `AGENT_ROOM_PUBLIC_URL` | server | public URL used in invitations and viewer links |
+| `AGENT_ROOM_ENABLE_ROOM_LIST` | server | `1` enables `GET /api/rooms` (lists all rooms). **Off by default** — on a hosted instance it would let any token holder enumerate every room. Local/monitor use only. |
 
 Hosted rooms use 128-bit room codes, and the client reports a clear error on a `401`/`403` from the proxy. See [`DEPLOY.md`](DEPLOY.md) for the full runbook (Docker, Unraid template, NGINX Proxy Manager / Authelia two-lane auth, firewalling, and cloud-agent setup). When a cloud environment sets an `HTTP(S)_PROXY`, the skill automatically uses Node so its `fetch` routes through that proxy.
 

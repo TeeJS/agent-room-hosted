@@ -208,6 +208,11 @@ async function route(request, response) {
   }
 
   if (request.method === "GET" && parts.length === 2) {
+    // Room enumeration is OFF by default. On a hosted instance it would let any token
+    // holder list every room, defeating the unguessable 130-bit room-code design. Opt in
+    // only for a trusted local/loopback deployment (e.g. the agent-room-monitor drop-in).
+    // Answer 404 when disabled so it is indistinguishable from a route that doesn't exist.
+    if (process.env.AGENT_ROOM_ENABLE_ROOM_LIST !== "1") { json(response, 404, { error: "Not found" }); return; }
     const statusFilter = String(url.searchParams.get("status") || "").trim().toLowerCase();
     const rooms = Object.values(loadState().rooms)
       .filter((room) => !statusFilter || room.status === statusFilter)
