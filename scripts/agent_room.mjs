@@ -11,18 +11,21 @@ import { fileURLToPath } from "node:url";
 
 const PORT = Number(process.env.AGENT_ROOM_PORT || 7331);
 const stripTrailingSlash = (value) => value.replace(/\/+$/, "");
-// Legacy single-endpoint default; equals the historic BASE_URL when no new vars are set.
+// This fork defaults the CLIENT to the hosted instance. Set AGENT_ROOM_REMOTE_URL to
+// override — e.g. http://127.0.0.1:7331 to run against a local server instead.
+const DEFAULT_REMOTE = "https://arh-api.schmitzplex.com";
 const LEGACY_BASE = `http://${process.env.AGENT_ROOM_HOST || "127.0.0.1"}:${PORT}`;
 // BIND_HOST: what the server listens on (e.g. 0.0.0.0 inside a container).
 const BIND_HOST = process.env.AGENT_ROOM_BIND_HOST || process.env.AGENT_ROOM_HOST || "127.0.0.1";
 // PUBLIC_URL: how the server advertises itself (viewer links, invitations, health).
 const PUBLIC_URL = stripTrailingSlash(process.env.AGENT_ROOM_PUBLIC_URL || LEGACY_BASE);
-// REMOTE_URL: where the CLIENT sends requests (a hosted instance, or local loopback).
-const REMOTE_URL = stripTrailingSlash(process.env.AGENT_ROOM_REMOTE_URL || LEGACY_BASE);
-// TOKEN: bearer credential the client attaches; empty means no auth header (unchanged local behaviour).
+// REMOTE_URL: where the CLIENT sends requests. Defaults to the hosted instance.
+const REMOTE_URL = stripTrailingSlash(process.env.AGENT_ROOM_REMOTE_URL || DEFAULT_REMOTE);
+// TOKEN: bearer credential the client attaches; empty means no auth header.
 const TOKEN = process.env.AGENT_ROOM_TOKEN || "";
-// IS_REMOTE: when set, the client talks to a remote host and never manages a local server.
-const IS_REMOTE = Boolean(process.env.AGENT_ROOM_REMOTE_URL);
+// IS_REMOTE: true unless the client points at a local loopback server. Only in local
+// mode does the CLI manage (spawn/stop) a server; against a remote host it never does.
+const IS_REMOTE = !/^https?:\/\/(127\.0\.0\.1|localhost|0\.0\.0\.0)(:\d+)?(\/|$)/i.test(REMOTE_URL);
 const DATA_DIR = process.env.AGENT_ROOM_HOME || path.join(os.homedir(), ".agent-room");
 const STATE_PATH = path.join(DATA_DIR, "rooms.json");
 const CONFIG_PATH = path.join(DATA_DIR, "config.json");
@@ -582,11 +585,11 @@ async function main() {
     saveConfig({ ...loadConfig(), user_name: userName });
   }
   if (command === "start") {
-    if (IS_REMOTE) throw new Error("start manages a LOCAL Agent Room server and is unavailable when AGENT_ROOM_REMOTE_URL is set.");
+    if (IS_REMOTE) throw new Error(`start runs a LOCAL server, but the client is pointed at ${REMOTE_URL}. Set AGENT_ROOM_REMOTE_URL=http://127.0.0.1:${PORT} to run one locally.`);
     await ensureServer(); console.log(`Agent Room is running at ${PUBLIC_URL} for ${loadConfig().user_name || "User"}`); return;
   }
   if (command === "stop") {
-    if (IS_REMOTE) throw new Error("stop manages a LOCAL Agent Room server and is unavailable when AGENT_ROOM_REMOTE_URL is set.");
+    if (IS_REMOTE) throw new Error(`stop manages a LOCAL server, but the client is pointed at ${REMOTE_URL}. Set AGENT_ROOM_REMOTE_URL=http://127.0.0.1:${PORT} to target a local server.`);
     if (!(await healthy())) { console.log("Agent Room is not running."); return; }
     const pid = Number(fs.readFileSync(PID_PATH, "utf8").trim());
     process.kill(pid, "SIGTERM");
