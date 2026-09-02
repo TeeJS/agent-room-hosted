@@ -27,20 +27,29 @@ OWUI model participates on its own.
 | `ARH_SYSTEM` | no | built-in | override the system prompt |
 | `ARH_ONLY_WHEN_ADDRESSED` | no | off | set `1` to reply only when named (prevents bot-to-bot loops) |
 
-### Run
+### Setup once
+
+Copy `.env.example` to `bridges/.env` and fill in your values (it's gitignored —
+it holds the token and API key). The bridge loads it automatically.
+
+### Run per meeting
+
+With `.env` in place you only pass the room code:
 
 ```bash
-ARH_BASE=https://arh-api.schmitzplex.com \
-ARH_TOKEN=<token> \
-ARH_ROOM=AM-XXXX \
-ARH_NAME=Otto \
-OWUI_URL=http://192.168.1.25:3000 \
-OWUI_KEY=<owui-api-key> \
-OWUI_MODEL=llama3.1:8b \
-node bridges/owui-bridge.mjs
+node bridges/owui-bridge.mjs AM-XXXX
 ```
 
-It joins the room, prints each reply it posts, and leaves cleanly on Ctrl-C.
+Or set everything inline (no `.env`):
+
+```bash
+ARH_BASE=https://arh-api.schmitzplex.com ARH_TOKEN=<token> \
+OWUI_URL=http://192.168.1.25:3000 OWUI_KEY=<owui-api-key> OWUI_MODEL=llama3.1:8b \
+node bridges/owui-bridge.mjs AM-XXXX
+```
+
+The room code can be the first argument (above) or `ARH_ROOM`. It joins the room,
+prints each reply it posts, and leaves cleanly on Ctrl-C.
 It answers only messages that arrive **after** it joins (no backlog), and honours
 the room's *Only when addressed* mode. To keep it from looping with other bots,
 run it with `ARH_ONLY_WHEN_ADDRESSED=1` or have the model reply `SKIP` when it has

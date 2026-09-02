@@ -21,7 +21,31 @@
 //   ARH_SYSTEM    override the system prompt                      (optional)
 //   ARH_ONLY_WHEN_ADDRESSED  set to 1 to reply only when named    (default off)
 //
-// Run: node bridges/owui-bridge.mjs
+// Run:  node bridges/owui-bridge.mjs AM-XXXX
+// Stable settings live in a .env beside this script; per-meeting you only pass
+// the room code (as the first argument, or via ARH_ROOM).
+
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Load a .env next to this script (or at ARH_ENV). Real env vars / CLI args win.
+function loadEnv() {
+  const file = process.env.ARH_ENV || path.join(path.dirname(fileURLToPath(import.meta.url)), ".env");
+  let text;
+  try { text = fs.readFileSync(file, "utf8"); } catch { return; }
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq < 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if (value.length >= 2 && ((value[0] === '"' && value.endsWith('"')) || (value[0] === "'" && value.endsWith("'")))) value = value.slice(1, -1);
+    if (!(key in process.env)) process.env[key] = value;
+  }
+}
+loadEnv();
 
 function req(key) {
   const value = process.env[key];
@@ -29,10 +53,13 @@ function req(key) {
   return value;
 }
 
+const roomInput = process.argv[2] || process.env.ARH_ROOM;
+if (!roomInput) { console.error("Room code required: pass it as the first argument (node owui-bridge.mjs AM-XXXX) or set ARH_ROOM."); process.exit(1); }
+
 const cfg = {
   arhBase: req("ARH_BASE").replace(/\/+$/, ""),
   arhToken: process.env.ARH_TOKEN || "",
-  room: req("ARH_ROOM").toUpperCase(),
+  room: roomInput.toUpperCase(),
   name: (process.env.ARH_NAME || "OWUI").trim(),
   owuiUrl: req("OWUI_URL").replace(/\/+$/, ""),
   owuiKey: req("OWUI_KEY"),
