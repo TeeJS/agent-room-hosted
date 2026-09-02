@@ -90,6 +90,8 @@ Hosted rooms use 128-bit room codes, and the client reports a clear error on a `
 
 Room data is stored in `~/.agent-room/` when you run a local server. A server you host binds where you tell it and keeps state in its own volume; see [Running against a server](#running-against-a-server).
 
+Live room state lives in `rooms.json`. The server also writes each room as a Markdown transcript under `AGENT_ROOM_TRANSCRIPT_DIR` (default `<data dir>/transcripts`), laid out as `YYYY/MM/DD/<title-slug>-<code>.md`. The date is the room's creation date in the server's `TZ` (UTC when unset). Files are rewritten a couple of seconds after each message and flushed when the room closes or the server stops. Set `AGENT_ROOM_RETENTION_DAYS` to prune closed rooms from `rooms.json` after that many days (their transcript file is kept); the default `0` never prunes.
+
 ## Update
 
 Pull the latest version and rerun the installer:

@@ -31,8 +31,16 @@ const STATE_PATH = path.join(DATA_DIR, "rooms.json");
 const CONFIG_PATH = path.join(DATA_DIR, "config.json");
 const PID_PATH = path.join(DATA_DIR, "server.pid");
 const LOG_PATH = path.join(DATA_DIR, "server.log");
+// TRANSCRIPT_DIR: where the server writes one Markdown file per room, laid out as
+// YYYY/MM/DD/<slug>-<code8>.md (date = room creation, in TZ if set, else UTC).
+// rooms.json stays the live store; these files are derived output, never read back.
+const TRANSCRIPT_DIR = process.env.AGENT_ROOM_TRANSCRIPT_DIR || path.join(DATA_DIR, "transcripts");
+const TRANSCRIPT_DEBOUNCE_MS = 2000;
+// RETENTION_DAYS: prune CLOSED rooms older than this from rooms.json once their
+// transcript file exists. 0 (default) = never prune; viewer URLs keep working forever.
+const RETENTION_DAYS = Math.max(0, Number(process.env.AGENT_ROOM_RETENTION_DAYS || 0) || 0);
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
-const VERSION = "0.5.2";
+const VERSION = "0.6.0";
 const waiters = new Map();
 const LEGACY_PARTICIPANT_COLORS = ["#A9C7FF", "#FFB4A9", "#A8E6CF", "#FFD6A5", "#D5B8FF", "#9EE7E5", "#F7B7D2", "#C7E9A0", "#F6C7A8", "#B9C6FF"];
 const PARTICIPANT_COLORS = ["#5B8CFF", "#FF6B5E", "#34C77B", "#F2B134", "#A970FF", "#20B8CC", "#F05DAA", "#78C442", "#F28A3E", "#6E79FF"];
@@ -55,9 +63,96 @@ function loadState() {
 
 function saveState(state) {
   ensureDir();
+  for (const room of Object.values(state.rooms)) if (!room.transcript_path) room.transcript_path = transcriptRelativePath(room);
   const temporary = `${STATE_PATH}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(state, null, 2));
   fs.renameSync(temporary, STATE_PATH);
+  scheduleTranscripts(state);
+}
+
+// ---- Markdown transcripts -------------------------------------------------------
+// Written on every save (debounced), flushed synchronously on close and on shutdown.
+// The path is computed once, stored on the room as transcript_path (relative to
+// TRANSCRIPT_DIR) and reused forever, so a title/TZ change never forks a second file.
+
+function transcriptSlug(room) {
+  const title = String(room.title || "room").toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 40).replace(/-$/, "") || "room";
+  const code8 = String(room.code || "").replace(/^AM-/i, "").slice(0, 8).toLowerCase() || "room";
+  return `${title}-${code8}`;
+}
+
+function transcriptRelativePath(room) {
+  const date = new Date(room.created_at || Date.now());
+  const options = { year: "numeric", month: "2-digit", day: "2-digit" };
+  let parts;
+  try { parts = new Intl.DateTimeFormat("en-US", { ...options, timeZone: process.env.TZ || "UTC" }).formatToParts(date); }
+  catch { parts = new Intl.DateTimeFormat("en-US", { ...options, timeZone: "UTC" }).formatToParts(date); }
+  const part = (type) => parts.find((entry) => entry.type === type).value;
+  return path.posix.join(part("year"), part("month"), part("day"), `${transcriptSlug(room)}.md`);
+}
+
+const transcriptStamps = new Map();
+const pendingTranscripts = new Set();
+let transcriptTimer = null;
+const transcriptStamp = (room) => `${room.updated_at}|${room.status}|${room.summary || ""}`;
+
+function writeTranscriptNow(room) {
+  if (!room.transcript_path) room.transcript_path = transcriptRelativePath(room);
+  const target = path.join(TRANSCRIPT_DIR, room.transcript_path);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temporary = `${target}.tmp`;
+  fs.writeFileSync(temporary, roomToMarkdown(room));
+  fs.renameSync(temporary, target);
+  transcriptStamps.set(room.code, transcriptStamp(room));
+}
+
+function scheduleTranscripts(state) {
+  for (const room of Object.values(state.rooms)) {
+    if (transcriptStamps.get(room.code) !== transcriptStamp(room)) pendingTranscripts.add(room.code);
+  }
+  if (!pendingTranscripts.size || transcriptTimer) return;
+  transcriptTimer = setTimeout(() => { transcriptTimer = null; flushTranscripts(loadState()); }, TRANSCRIPT_DEBOUNCE_MS);
+  transcriptTimer.unref();
+}
+
+function flushTranscripts(state) {
+  if (transcriptTimer) { clearTimeout(transcriptTimer); transcriptTimer = null; }
+  for (const code of pendingTranscripts) {
+    const room = state.rooms[code];
+    if (!room) continue;
+    try { writeTranscriptNow(room); }
+    catch (error) { process.stderr.write(`transcript write failed for ${code}: ${error.message}\n`); }
+  }
+  pendingTranscripts.clear();
+}
+
+// Startup pass: give every room a transcript_path and a file on disk (idempotent), then
+// apply retention. Only rooms whose transcript file exists are ever pruned.
+function migrateTranscripts() {
+  const state = loadState();
+  let changed = false;
+  for (const room of Object.values(state.rooms)) {
+    if (!room.transcript_path) { room.transcript_path = transcriptRelativePath(room); changed = true; }
+    if (!fs.existsSync(path.join(TRANSCRIPT_DIR, room.transcript_path))) {
+      try { writeTranscriptNow(room); } catch (error) { process.stderr.write(`transcript write failed for ${room.code}: ${error.message}\n`); }
+    } else transcriptStamps.set(room.code, transcriptStamp(room));
+  }
+  if (changed) saveState(state);
+  pruneClosedRooms();
+}
+
+function pruneClosedRooms() {
+  if (!RETENTION_DAYS) return;
+  const state = loadState();
+  const cutoff = Date.now() - RETENTION_DAYS * 86400000;
+  let changed = false;
+  for (const [code, room] of Object.entries(state.rooms)) {
+    if (room.status !== "closed" || !room.transcript_path) continue;
+    if (Date.parse(room.updated_at || room.created_at || "") > cutoff) continue;
+    if (!fs.existsSync(path.join(TRANSCRIPT_DIR, room.transcript_path))) continue;
+    delete state.rooms[code]; transcriptStamps.delete(code); changed = true;
+  }
+  if (changed) saveState(state);
 }
 
 function migrateState() {
@@ -413,6 +508,7 @@ async function route(request, response) {
     }
     if (room.participants.length) { room.participants = []; changed = true; }
     if (changed) { saveState(state); notify(code); }
+    flushTranscripts(state);
     json(response, 200, publicRoom(room)); return;
   }
 
@@ -486,12 +582,15 @@ function notFoundPage(code) {
 function startServer() {
   ensureDir();
   migrateState();
+  migrateTranscripts();
+  setInterval(pruneClosedRooms, 6 * 3600000).unref();
   const server = http.createServer((request, response) => route(request, response).catch((error) => json(response, 400, { error: error.message })));
   server.listen(PORT, BIND_HOST, () => {
     fs.writeFileSync(PID_PATH, String(process.pid));
-    process.stdout.write(`Agent Room ${VERSION} listening on ${BIND_HOST}:${PORT} (public: ${PUBLIC_URL})\n`);
+    process.stdout.write(`Agent Room ${VERSION} listening on ${BIND_HOST}:${PORT} (public: ${PUBLIC_URL}); transcripts in ${TRANSCRIPT_DIR}\n`);
   });
   const close = () => server.close(() => {
+    try { flushTranscripts(loadState()); } catch {}
     try { if (fs.readFileSync(PID_PATH, "utf8").trim() === String(process.pid)) fs.unlinkSync(PID_PATH); } catch {}
     process.exit(0);
   });

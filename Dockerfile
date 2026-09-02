@@ -7,14 +7,20 @@ FROM node:22-alpine
 WORKDIR /app
 COPY scripts/agent_room.mjs /app/agent_room.mjs
 
-# Persistent room state lives here; mount a volume over it.
-RUN mkdir -p /data
+# Persistent room state (rooms.json) lives in /data; mount a volume over it.
+# Per-room Markdown transcripts (YYYY/MM/DD/<slug>-<code8>.md) are written under
+# AGENT_ROOM_TRANSCRIPT_DIR — default /data/transcripts, or mount a separate volume
+# and point the variable at it.
+RUN mkdir -p /data/transcripts
 VOLUME /data
 
 ENV AGENT_ROOM_HOME=/data \
+    AGENT_ROOM_TRANSCRIPT_DIR=/data/transcripts \
     AGENT_ROOM_BIND_HOST=0.0.0.0 \
     AGENT_ROOM_PORT=7331
 # AGENT_ROOM_PUBLIC_URL is supplied at run time (e.g. https://arh.schmitzplex.com).
+# Optional: TZ (transcript folder dates follow it; UTC when unset),
+#           AGENT_ROOM_RETENTION_DAYS (prune closed rooms from rooms.json; 0 = never).
 
 EXPOSE 7331
 # Run as root so the app can write to a bind-mounted appdata volume regardless of

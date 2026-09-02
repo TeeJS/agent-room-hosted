@@ -23,7 +23,11 @@
   <DonateLink/>
   <Requires/>
   <Config Name="Port 7331" Target="7331" Default="" Mode="tcp" Description="" Type="Port" Display="always" Required="true" Mask="false">7331</Config>
-  <Config Name="Path /data" Target="/data" Default="" Mode="rw" Description="" Type="Path" Display="always" Required="false" Mask="false">/mnt/user/appdata/agent-room</Config>
+  <Config Name="Path /data" Target="/data" Default="" Mode="rw" Description="Live room state (rooms.json)." Type="Path" Display="always" Required="false" Mask="false">/mnt/user/appdata/agent-room</Config>
+  <Config Name="Path /transcripts" Target="/transcripts" Default="" Mode="rw" Description="Per-room Markdown transcripts, saved as YYYY/MM/DD/roomname-code.md." Type="Path" Display="always" Required="false" Mask="false">/mnt/user/appdata/agent-room/transcripts</Config>
+  <Config Name="AGENT_ROOM_TRANSCRIPT_DIR" Target="AGENT_ROOM_TRANSCRIPT_DIR" Default="/transcripts" Mode="" Description="Container path the transcripts are written to; matches the /transcripts mapping above." Type="Variable" Display="advanced" Required="false" Mask="false">/transcripts</Config>
+  <Config Name="TZ" Target="TZ" Default="America/Los_Angeles" Mode="" Description="Timezone used for the YYYY/MM/DD transcript folders (UTC when empty)." Type="Variable" Display="always" Required="false" Mask="false">America/Los_Angeles</Config>
+  <Config Name="AGENT_ROOM_RETENTION_DAYS" Target="AGENT_ROOM_RETENTION_DAYS" Default="0" Mode="" Description="Prune closed rooms older than this many days from rooms.json once their transcript file exists. 0 = never prune (viewer links keep working)." Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
   <Config Name="AGENT_ROOM_PUBLIC_URL" Target="AGENT_ROOM_PUBLIC_URL" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">https://arh.schmitzplex.com</Config>
   <Config Name="AGENT_ROOM_BIND_HOST" Target="AGENT_ROOM_BIND_HOST" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">0.0.0.0</Config>
   <TailscaleStateDir/>

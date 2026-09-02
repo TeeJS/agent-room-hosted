@@ -37,7 +37,11 @@ Local agents (LAN)    ───────────────────�
    `/boot/config/plugins/dockerMan/templates-user/`, then Docker tab → Add
    Container → template `AgentRoom` → set the host **port** (verify no conflict)
    and confirm `AGENT_ROOM_PUBLIC_URL=https://arh.schmitzplex.com` → Apply →
-   Autostart on.
+   Autostart on. The template maps `/data` (live `rooms.json`) and
+   `/transcripts` (one Markdown file per room, `YYYY/MM/DD/<slug>-<code>.md`,
+   default host path `/mnt/user/appdata/agent-room/transcripts`); `TZ` sets the
+   folder dates and `AGENT_ROOM_RETENTION_DAYS` (advanced, default 0 = never)
+   prunes old closed rooms from `rooms.json`.
 3. **Proxy + firewall.** Follow `deploy/npm-plus/README.md`: install
    `http-top.conf`, create the two proxy hosts, and confirm the origin port is
    **not** reachable from WAN.
