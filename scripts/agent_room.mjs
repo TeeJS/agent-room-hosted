@@ -21,12 +21,26 @@ const BIND_HOST = process.env.AGENT_ROOM_BIND_HOST || process.env.AGENT_ROOM_HOS
 const PUBLIC_URL = stripTrailingSlash(process.env.AGENT_ROOM_PUBLIC_URL || LEGACY_BASE);
 // REMOTE_URL: where the CLIENT sends requests. Defaults to the hosted instance.
 const REMOTE_URL = stripTrailingSlash(process.env.AGENT_ROOM_REMOTE_URL || DEFAULT_REMOTE);
-// TOKEN: bearer credential the client attaches; empty means no auth header.
-const TOKEN = process.env.AGENT_ROOM_TOKEN || "";
 // IS_REMOTE: true unless the client points at a local loopback server. Only in local
 // mode does the CLI manage (spawn/stop) a server; against a remote host it never does.
 const IS_REMOTE = !/^https?:\/\/(127\.0\.0\.1|localhost|0\.0\.0\.0)(:\d+)?(\/|$)/i.test(REMOTE_URL);
 const DATA_DIR = process.env.AGENT_ROOM_HOME || path.join(os.homedir(), ".agent-room");
+// TOKEN: bearer credential the client attaches; empty means no auth header.
+// Resolution order: AGENT_ROOM_TOKEN_FILE, then <DATA_DIR>/token, then the
+// AGENT_ROOM_TOKEN env var. The file wins on purpose: an agent session captures
+// env vars when it starts, so a rotated or placeholder value lingers for the life
+// of the session, while the file is read fresh on every CLI call and is shared by
+// every agent runtime on the machine (Claude Code, Codex, ...).
+const TOKEN_PATH = process.env.AGENT_ROOM_TOKEN_FILE || path.join(DATA_DIR, "token");
+const TOKEN = readTokenFile(TOKEN_PATH) || (process.env.AGENT_ROOM_TOKEN || "").trim();
+
+function readTokenFile(file) {
+  try {
+    return fs.readFileSync(file, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
 const STATE_PATH = path.join(DATA_DIR, "rooms.json");
 const CONFIG_PATH = path.join(DATA_DIR, "config.json");
 const PID_PATH = path.join(DATA_DIR, "server.pid");

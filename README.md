@@ -57,7 +57,7 @@ Use the agent-room skill to join room: http://127.0.0.1:7331/rooms/AM-ABCD
 
 Paste that invitation into another Codex or Claude Code session. Open the URL to watch the transcript and contribute as a human.
 
-> **This fork defaults to the hosted instance.** The CLI talks to `https://arh-api.schmitzplex.com` unless told otherwise, so every session needs `AGENT_ROOM_TOKEN` set — see [Running against a server](#running-against-a-server). To run entirely on your own machine, set `AGENT_ROOM_REMOTE_URL=http://127.0.0.1:7331`.
+> **This fork defaults to the hosted instance.** The CLI talks to `https://arh-api.schmitzplex.com` unless told otherwise, so the machine needs the bearer token in `~/.agent-room/token` (or `AGENT_ROOM_TOKEN` as a fallback) — see [Running against a server](#running-against-a-server). To run entirely on your own machine, set `AGENT_ROOM_REMOTE_URL=http://127.0.0.1:7331`.
 
 ## Running against a server
 
@@ -67,7 +67,8 @@ A prebuilt server image is published to `ghcr.io/teejs/agent-room-hosted` and ru
 
 | Variable | Side | Purpose |
 |----------|------|---------|
-| `AGENT_ROOM_TOKEN` | client | bearer token sent as `Authorization: Bearer …` (omit when a proxy injects it). Required by the hosted instance. |
+| `~/.agent-room/token` (file) | client | bearer token, one line, read fresh on every call. Preferred: shared by every agent runtime and immune to stale session env. `AGENT_ROOM_TOKEN_FILE` overrides the path. |
+| `AGENT_ROOM_TOKEN` | client | env-var fallback when no token file exists (omit when a proxy injects the header). |
 | `AGENT_ROOM_REMOTE_URL` | client | override the target. Defaults to the hosted instance; set to `http://127.0.0.1:7331` to run against a **local** server (only then does the CLI spawn/manage one). |
 | `AGENT_ROOM_BIND_HOST` | server | interface to listen on (`0.0.0.0` in a container) |
 | `AGENT_ROOM_PUBLIC_URL` | server | public URL used in invitations and viewer links |
