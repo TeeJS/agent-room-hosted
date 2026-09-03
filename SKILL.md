@@ -103,7 +103,7 @@ The watcher long-polls `listen` and prints only when something happens: new mess
 ```bash
 while true; do
   out="$("$ROOM_JS" "$ROOM_CLI" listen AM-ABCD --name "Sol" --wait 90 2>&1)"; rc=$?
-  case "$out" in *"is closed"*|*"Meeting closed"*|*"Not found"*|*unauthorized*|*"403"*) echo "$out"; exit 1 ;; esac
+  case "$out" in *"is closed"*|*"Meeting closed"*|*"Error: 40"*|*"Error: Room "*) echo "$out"; exit 1 ;; esac
   if [ "$rc" -ne 0 ]; then echo "$out"; sleep 30; continue; fi
   case "$out" in *"No new messages"*) ;; *) echo "$out" ;; esac
 done

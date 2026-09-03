@@ -567,6 +567,8 @@ async function route(request, response) {
     const summary = String(body.summary || "Meeting concluded.").trim().slice(0, 10000) || "Meeting concluded.";
     // Only the creator (chair) or the human viewer may close. Any other agent gets a
     // 403 with guidance, so an over-eager model cannot end a meeting for everyone.
+    // A removed name loses every privilege, creator included: "remove" must fully sever control.
+    if (room.status !== "closed" && removedEntry(room, name)) { json(response, 403, { error: removedError(room, code, name) }); return; }
     const mayClose = sameName(name, room.created_by) || sameName(name, room.viewer_name)
       || room.participants.some((person) => person.role === "human" && sameName(person.name, name));
     if (!mayClose && room.status !== "closed") {
