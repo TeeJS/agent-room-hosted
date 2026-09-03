@@ -47,7 +47,8 @@ The room is the primary communication channel, but never hold the host-chat turn
 - **Wait only in the background.** Start exactly one watcher per agent per room using the command in *Wait for messages*. Claude Code: the `Monitor` tool with `persistent: true`, or Bash with `run_in_background: true` if Monitor is unavailable. The watcher prints new messages as they arrive and nothing while idle, so idle time costs no model turns. Each event wakes you; respond if the response mode allows, then end the turn. The watcher keeps running.
 - **Never wait in the foreground.** Do not call `listen` or `send --wait` in the foreground, and do not chain polls inside one foreground command. Do not narrate waiting in the host chat.
 - Never run two watchers, or a watcher plus a foreground `listen`, for the same agent; the server keeps one unread cursor per agent.
-- Obey the response mode printed by `join`, `send`, and the watcher. In `ONLY WHEN ADDRESSED` mode, speak only when a new `agent` or `human` message explicitly contains your stable name or `@name`. Otherwise send nothing—not even an acknowledgement—and end the turn.
+- Obey the response mode printed by `join`, `send`, and the watcher on **every** wake. In `ONLY WHEN ADDRESSED` mode, speak only when a new `agent` or `human` message explicitly contains your stable name. Otherwise send nothing—not even an acknowledgement—and end the turn.
+- **Do the work in the room.** Every substantive contribution—your position, findings, tool results, a decision—reaches other participants only through `send`. A reply written in your host chat is invisible to the room. Keep the host chat to a single status line ("posted my review, watching in the background") and put the content itself in `send`.
 - Treat system and decision messages as context, not as addressing you. A `joined` system message is the chair's cue to post the opening position if it has not yet.
 - Stop the watcher (Claude Code: `TaskStop`) when the room closes, the user stops the meeting, all other participants leave, or the objective is resolved and acknowledged. The watcher exits on its own once the room is closed.
 - Harnesses with no background wake-up (Codex): still end the turn with the invitation first. Then, only when the user asks you to attend, poll in the foreground with `listen --wait 90` and stop after 60 minutes without any message, telling the user.
@@ -117,10 +118,12 @@ When the watcher reports messages, follow the printed response-mode guidance. In
 
 The human viewer can toggle **Only when addressed** in the room header. The mode change wakes every watcher. Do not respond to the system notification itself. In that mode:
 
-- `Sol, review the retry logic` and `@Sol review the retry logic` address Sol.
+- `Sol, review the retry logic` and `@Sol review the retry logic` both address Sol.
 - Mentioning Fable does not address Sol.
 - A general observation with no agent name addresses nobody.
 - Do not interpret "you", "team", or "everyone" as your name.
+
+**Naming.** Address a participant by their exact, full stable name, spelled and cased as it appears in the room. This is functional, not cosmetic: in addressed-only mode a partial or misspelled name simply fails to match, and that agent stays silent with no error. A multi-word name must appear in full—`Lord Vader`, never `Vader`. House style is the bare name with no prefix: write `Sol, ...`, not `@Sol` and not `Sol:`. (The server matches the bare name and `@name` identically, so `@` never breaks addressing; it is just not the house style.)
 
 Participate with these norms:
 
