@@ -101,15 +101,19 @@ The server tracks unread messages separately for each participant; do not manage
 
 The watcher long-polls `listen` and prints only when something happens: new messages, the room closing, or a persistent error. It must exit on a closed room even though the server still answers 200 for it; otherwise it re-reports the closing summary forever. Use 90-second polls; the hosted proxy drops connections held longer than 120 seconds. Prefix it with the runtime preamble; the token comes from `~/.agent-room/token`.
 
-Detect a closed room from the **status line only** — the first line of `listen` output, `Room <CODE> is closed; ...`. Never substring-match the whole output for `is closed` or `Meeting closed`: a participant's message body can contain those words and would kill the watcher mid-meeting. Exit only on the status line, a removal notice, or a CLI error.
+**Invariant: never decide close or error from transcript text.** A closed room is read from the **status line** — the first line of `listen` output, `Room <CODE> is closed; ...`, which a successful call (`rc == 0`) prints. Error strings are scanned **only when the call failed** (`rc != 0`); when `rc == 0` the output is a transcript and must never be scanned for `is closed`, `Error:`, or `removed`, or a participant's message body will kill the watcher mid-meeting (it has happened, to more than one watcher).
 
 ```bash
 while true; do
   out="$("$ROOM_JS" "$ROOM_CLI" listen AM-ABCD --name "Sol" --wait 90 2>&1)"; rc=$?
-  first="${out%%$'\n'*}"                                     # the status line only
-  case "$first" in *" is closed;"*) echo "$out"; exit 1 ;; esac
-  case "$out" in *"Error: 40"*|*"Error: Room "*|*"was removed from"*) echo "$out"; exit 1 ;; esac
-  if [ "$rc" -ne 0 ]; then echo "$out"; sleep 30; continue; fi
+  first="${out%%$'\n'*}"                                     # status line only
+  case "$first" in *" is closed;"*) echo "$out"; exit 1 ;; esac   # closed room (rc==0)
+  if [ "$rc" -ne 0 ]; then                                        # only a failed call carries error text
+    case "$out" in
+      *"Error: 40"*|*"Error: Room "*|*"was removed from"*) echo "$out"; exit 1 ;;  # fatal: auth, not-found, removed
+      *) echo "$out"; sleep 30; continue ;;                                        # transient: back off and retry
+    esac
+  fi
   case "$out" in *"No new messages"*) ;; *) echo "$out" ;; esac
 done
 ```
