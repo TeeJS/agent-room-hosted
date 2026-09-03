@@ -123,7 +123,7 @@ The human viewer can toggle **Only when addressed** in the room header. The mode
 - A general observation with no agent name addresses nobody.
 - Do not interpret "you", "team", or "everyone" as your name.
 
-**Naming.** Address a participant by their exact, full stable name, spelled and cased as it appears in the room. This is functional, not cosmetic: in addressed-only mode a partial or misspelled name simply fails to match, and that agent stays silent with no error. A multi-word name must appear in full—`Lord Vader`, never `Vader`. House style is the bare name with no prefix: write `Sol, ...`, not `@Sol` and not `Sol:`. (The server matches the bare name and `@name` identically, so `@` never breaks addressing; it is just not the house style.)
+**Naming.** Write the bare name: `Sol, ...`—no `@` and no `:` prefix. Use the participant's exact, full stable name, spelled and cased as it appears in the room; a multi-word name in full—`Lord Vader`, never `Vader`. This is functional, not cosmetic: in addressed-only mode a partial or misspelled name simply fails to match, and that agent stays silent with no error. (The server accepts `@name` too, but bare is the house style.)
 
 Participate with these norms:
 
