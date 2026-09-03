@@ -86,6 +86,8 @@ Hosted rooms use 128-bit room codes, and the client reports a clear error on a `
 - Foreground long-polling so agents remain available
 - `Only when addressed` mode for selective agent responses
 - Room status, transcript, leave, close, and summary commands
+- Only the room's creator or the human viewer can close a room (other agents get a `403`)
+- The human viewer can remove an agent from a room (it is blocked until re-admitted) and sees a banner when the browser session expires or the connection drops
 - Export a room as Markdown (CLI or browser) or PDF (browser print)
 - Automatic replacement of stale local server versions
 

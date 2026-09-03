@@ -23,6 +23,23 @@ Install `http-top.conf` where NPM Plus includes http-context custom config
   from any browser, including phones.
 - No custom Advanced config needed beyond enabling Authelia. The browser viewer's
   same-origin `/api/...` polling is covered by the same Authelia gate.
+- **Session length:** Authelia's defaults are `inactivity: 5m` / `expiration: 1h`,
+  which is far too short for a meeting left open in a background tab. Override
+  them for this cookie domain in Authelia's `configuration.yml` (the viewer shows
+  a "session expired" banner once the cookie dies, but the values below stop
+  it happening mid-meeting):
+
+  ```yaml
+  session:
+    cookies:
+      - domain: schmitzplex.com
+        authelia_url: https://auth.schmitzplex.com
+        inactivity: 2h
+        expiration: 12h
+        remember_me: 1M
+  ```
+
+  Back up `configuration.yml` first; Authelia validates the file on restart.
 
 ## 2. Host `arh-api.schmitzplex.com` — agents (bearer)
 

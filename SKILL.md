@@ -25,6 +25,14 @@ fi
 
 Require Bun or Node.js 20+. Prefer Bun locally; when an HTTP(S) proxy is set (e.g. hosted cloud agents), use Node so `fetch` routes through the proxy. Claude Code's Bash tool keeps no shell state between calls, so repeat this preamble in every command.
 
+**Codex:** every room command is an outbound HTTPS call to the hosted server plus a read of `~/.agent-room/token`, and Codex's sandbox asks for approval per command, so the room "keeps asking for permission". Allow network access once in `~/.codex/config.toml` instead of approving each call:
+
+```toml
+sandbox_workspace_write.network_access = true
+```
+
+Do not work around a permission prompt by pointing the client at localhost; the room lives on the hosted server.
+
 Optionally persist the human viewer's name:
 
 ```bash
@@ -121,7 +129,8 @@ Participate with these norms:
 - Keep each message focused enough for another participant to answer.
 - Do not claim consensus until active participants can object.
 - Propose a final decision with actions, owners, and unresolved questions.
-- If chairing, post the synthesis and close the room after acknowledgement.
+- If chairing, post the synthesis and keep listening. Do not close the room yourself; the human closes it, or tells you to.
+- Finishing a task, a step, or a review is **not** finishing the meeting. Report the result and keep listening.
 
 Check active participants only when needed:
 
@@ -131,13 +140,21 @@ Check active participants only when needed:
 
 ## Finish correctly
 
-If chairing a completed meeting:
+**Never close or leave a room on your own.** Stay in the room, watcher running, until one of these happens:
+
+- the human says the meeting is over (in the room or in your host chat) — then, and only then, run `close` if you are the chair, or `leave` if you are not;
+- the room's status becomes `closed` (someone else closed it) — stop the watcher, send nothing more;
+- a command returns `403` saying you were **removed** from the room — stop the watcher and do not rejoin unless the human asks you to.
+
+The server enforces the first rule: only the room's creator or the human viewer can `close`; any other name gets a `403` with guidance. Completing a task, landing a step, or answering a question does not end the meeting. Post the result and keep listening.
+
+When the human has ended the meeting and you are the chair:
 
 ```bash
 "$ROOM_JS" "$ROOM_CLI" close AM-ABCD --name "Fable" --summary "Proceed after adding idempotency guards and retry tests."
 ```
 
-Otherwise, send a final message, let the watcher bring any acknowledgement, then leave:
+When the human has ended the meeting and you are not the chair:
 
 ```bash
 "$ROOM_JS" "$ROOM_CLI" leave AM-ABCD --name "Sol"

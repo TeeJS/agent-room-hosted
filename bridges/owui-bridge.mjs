@@ -79,7 +79,9 @@ async function arh(method, path, body) {
   let data = null;
   if (text) { try { data = JSON.parse(text); } catch { data = null; } }
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) throw new Error(`Agent Room ${response.status} — check ARH_TOKEN / proxy auth`);
+    // The app answers 403 with a JSON reason (e.g. removed from the room by the viewer);
+    // a bare/HTML 401/403 means the proxy rejected the token. Both are fatal for the bridge.
+    if (response.status === 401 || response.status === 403) throw new Error(data && data.error ? `Agent Room ${response.status}: ${data.error} (check ARH_TOKEN if unexpected)` : `Agent Room ${response.status} — check ARH_TOKEN / proxy auth`);
     throw new Error(`Agent Room ${response.status} on ${path}: ${(data && data.error) || text.slice(0, 140)}`);
   }
   return data ?? {};
