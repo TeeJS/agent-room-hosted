@@ -75,7 +75,7 @@ const ATTACH_TYPES = {
 };
 const ATTACH_EXT_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf", txt: "text/plain", md: "text/markdown", markdown: "text/markdown" };
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
-const VERSION = "0.8.2";
+const VERSION = "0.8.3";
 const waiters = new Map();
 const LEGACY_PARTICIPANT_COLORS = ["#A9C7FF", "#FFB4A9", "#A8E6CF", "#FFD6A5", "#D5B8FF", "#9EE7E5", "#F7B7D2", "#C7E9A0", "#F6C7A8", "#B9C6FF"];
 const PARTICIPANT_COLORS = ["#5B8CFF", "#FF6B5E", "#34C77B", "#F2B134", "#A970FF", "#20B8CC", "#F05DAA", "#78C442", "#F28A3E", "#6E79FF"];
@@ -325,6 +325,20 @@ function notify(code) {
   waiters.delete(code);
 }
 
+// Serialize all state mutations. loadState -> mutate -> saveState is a read-modify-write
+// on a single rooms.json, and handlers yield at `await readBody`/`await waitForChange`,
+// so without this two concurrent requests can both read the old state and the later
+// save clobbers the earlier one (lost update: dropped messages/joins/read-cursors).
+// withLock runs each task after the previous settles; every task MUST loadState() fresh
+// INSIDE the lock so it mutates the latest state, never the stale snapshot from route()'s
+// top. Adapted from alihasanbd's fix to steviebuilds/agent-room.
+let writeQueue = Promise.resolve();
+function withLock(task) {
+  const result = writeQueue.then(task, task);
+  writeQueue = result.then(() => {}, () => {});
+  return result;
+}
+
 function json(response, status, value) {
   const body = JSON.stringify(value);
   response.writeHead(status, {
@@ -414,25 +428,28 @@ async function route(request, response) {
 
   if (request.method === "POST" && parts.length === 2) {
     const body = await readBody(request);
-    const state = loadState();
-    let code = makeCode();
-    while (state.rooms[code]) code = makeCode();
-    const title = String(body.title || "Agent meeting").trim().slice(0, 160) || "Agent meeting";
-    const objective = String(body.objective || "Reach a clear, evidence-based conclusion.").trim().slice(0, 4000);
-    const creator = String(body.name || "Host").trim().slice(0, 80) || "Host";
-    const viewerName = String(body.user_name || loadConfig().user_name || "User").trim().slice(0, 80) || "User";
-    const room = {
-      code, title, objective, status: "open", created_by: creator,
-      viewer_name: viewerName,
-      created_at: now(), updated_at: now(),
-      participants: [{ name: creator, role: "agent", joined_at: now(), last_read_id: 0, color: PARTICIPANT_COLORS[0] }],
-      messages: [], next_message_id: 1, summary: "", addressed_only: false,
-    };
-    addMessage(room, "Room", `${creator} created the meeting. Objective: ${objective}`, "system");
-    room.participants[0].last_read_id = room.next_message_id - 1;
-    state.rooms[code] = room;
-    saveState(state);
-    notify(code);
+    const room = await withLock(() => {
+      const state = loadState();
+      let code = makeCode();
+      while (state.rooms[code]) code = makeCode();
+      const title = String(body.title || "Agent meeting").trim().slice(0, 160) || "Agent meeting";
+      const objective = String(body.objective || "Reach a clear, evidence-based conclusion.").trim().slice(0, 4000);
+      const creator = String(body.name || "Host").trim().slice(0, 80) || "Host";
+      const viewerName = String(body.user_name || loadConfig().user_name || "User").trim().slice(0, 80) || "User";
+      const newRoom = {
+        code, title, objective, status: "open", created_by: creator,
+        viewer_name: viewerName,
+        created_at: now(), updated_at: now(),
+        participants: [{ name: creator, role: "agent", joined_at: now(), last_read_id: 0, color: PARTICIPANT_COLORS[0] }],
+        messages: [], next_message_id: 1, summary: "", addressed_only: false,
+      };
+      addMessage(newRoom, "Room", `${creator} created the meeting. Objective: ${objective}`, "system");
+      newRoom.participants[0].last_read_id = newRoom.next_message_id - 1;
+      state.rooms[code] = newRoom;
+      saveState(state);
+      return newRoom;
+    });
+    notify(room.code);
     json(response, 201, publicRoom(room)); return;
   }
 
@@ -487,8 +504,14 @@ async function route(request, response) {
     }
     const latestMessageId = room.next_message_id - 1;
     if (participant) {
-      participant.last_read_id = Math.max(Number(participant.last_read_id || 0), latestMessageId);
-      saveState(state);
+      await withLock(() => {
+        const freshState = loadState();
+        const freshRoom = freshState.rooms[code];
+        const freshParticipant = freshRoom && freshRoom.participants.find((person) => person.name.toLowerCase() === name.toLowerCase());
+        if (!freshParticipant) return;
+        freshParticipant.last_read_id = Math.max(Number(freshParticipant.last_read_id || 0), latestMessageId);
+        saveState(freshState);
+      });
     }
     const deliveredMessages = messages.map((message) => ({
       ...message,
@@ -557,159 +580,236 @@ async function route(request, response) {
     const buffer = Buffer.from(String(uploadBody.data_base64 || ""), "base64");
     if (!buffer.length) { json(response, 400, { error: "data_base64 is required" }); return; }
     if (buffer.length > ATTACH_MAX_BYTES) { json(response, 413, { error: `Attachment is ${formatBytes(buffer.length)}; the limit is ${formatBytes(ATTACH_MAX_BYTES)}` }); return; }
-    const id = makeAttachmentId();
-    const dir = path.join(ATTACH_DIR, room.code);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, id), buffer);
-    const entry = {
-      id, filename, content_type: contentType, size: buffer.length,
-      sha256: crypto.createHash("sha256").update(buffer).digest("hex"),
-      uploaded_by: uploader, message_id: null, created_at: now(),
-    };
-    if (!room.attachments || typeof room.attachments !== "object") room.attachments = {};
-    room.attachments[id] = entry;
-    saveState(state);
-    json(response, 201, attachmentSnapshot(entry)); return;
+    const outcome = await withLock(() => {
+      const freshState = loadState();
+      const freshRoom = freshState.rooms[code];
+      if (!freshRoom) return { status: 404, body: { error: `Room ${code} not found` } };
+      if (freshRoom.status === "closed") return { status: 409, body: { error: `Room ${code} is closed` } };
+      if (removedEntry(freshRoom, uploader)) return { status: 403, body: { error: removedError(freshRoom, code, uploader) } };
+      const id = makeAttachmentId();
+      const dir = path.join(ATTACH_DIR, freshRoom.code);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, id), buffer);
+      const entry = {
+        id, filename, content_type: contentType, size: buffer.length,
+        sha256: crypto.createHash("sha256").update(buffer).digest("hex"),
+        uploaded_by: uploader, message_id: null, created_at: now(),
+      };
+      if (!freshRoom.attachments || typeof freshRoom.attachments !== "object") freshRoom.attachments = {};
+      freshRoom.attachments[id] = entry;
+      saveState(freshState);
+      return { status: 201, body: attachmentSnapshot(entry) };
+    });
+    json(response, outcome.status, outcome.body); return;
   }
 
   const body = await readBody(request);
 
   if (parts[3] === "join") {
-    if (room.status === "closed") { json(response, 409, { error: `Room ${code} is closed` }); return; }
     const name = String(body.name || "Agent").trim().slice(0, 80) || "Agent";
-    if (removedEntry(room, name)) { json(response, 403, { error: removedError(room, code, name) }); return; }
-    if (!room.participants.some((person) => person.name.toLowerCase() === name.toLowerCase())) {
-      room.participants.push({ name, role: "agent", joined_at: now(), last_read_id: room.next_message_id - 1, color: nextParticipantColor(room) });
-      const joined = addMessage(room, "Room", `${name} joined the meeting.`, "system");
-      room.participants.at(-1).last_read_id = joined.id;
-      saveState(state); notify(code);
-    } else {
-      const participant = room.participants.find((person) => person.name.toLowerCase() === name.toLowerCase());
-      participant.last_read_id = room.next_message_id - 1;
-      saveState(state);
-    }
-    json(response, 200, publicRoom(room)); return;
+    const outcome = await withLock(() => {
+      const freshState = loadState();
+      const freshRoom = freshState.rooms[code];
+      if (!freshRoom) return { status: 404, body: { error: `Room ${code} not found` } };
+      if (freshRoom.status === "closed") return { status: 409, body: { error: `Room ${code} is closed` } };
+      if (removedEntry(freshRoom, name)) return { status: 403, body: { error: removedError(freshRoom, code, name) } };
+      if (!freshRoom.participants.some((person) => person.name.toLowerCase() === name.toLowerCase())) {
+        freshRoom.participants.push({ name, role: "agent", joined_at: now(), last_read_id: freshRoom.next_message_id - 1, color: nextParticipantColor(freshRoom) });
+        const joined = addMessage(freshRoom, "Room", `${name} joined the meeting.`, "system");
+        freshRoom.participants.at(-1).last_read_id = joined.id;
+      } else {
+        const participant = freshRoom.participants.find((person) => person.name.toLowerCase() === name.toLowerCase());
+        participant.last_read_id = freshRoom.next_message_id - 1;
+      }
+      saveState(freshState);
+      return { status: 200, body: publicRoom(freshRoom) };
+    });
+    if (outcome.status === 200) notify(code);
+    json(response, outcome.status, outcome.body); return;
   }
 
   if (parts[3] === "messages") {
-    if (room.status === "closed") { json(response, 409, { error: `Room ${code} is closed` }); return; }
     const name = String(body.name || "Agent").trim().slice(0, 80) || "Agent";
     const content = String(body.content || "").trim();
     const hasAttachments = Array.isArray(body.attachments) && body.attachments.length > 0;
     if (!content && !hasAttachments) { json(response, 400, { error: "Content or an attachment is required" }); return; }
-    if (removedEntry(room, name)) { json(response, 403, { error: removedError(room, code, name) }); return; }
-    if (!room.participants.some((person) => person.name.toLowerCase() === name.toLowerCase())) room.participants.push({ name, role: "agent", joined_at: now(), last_read_id: room.next_message_id - 1, color: nextParticipantColor(room) });
-    const message = addMessage(room, name, content);
-    const resolved = resolveAttachments(room, body.attachments, message.id);
-    if (resolved.length) message.attachments = resolved;
-    saveState(state); notify(code);
-    json(response, 201, { message }); return;
+    const outcome = await withLock(() => {
+      const freshState = loadState();
+      const freshRoom = freshState.rooms[code];
+      if (!freshRoom) return { status: 404, body: { error: `Room ${code} not found` } };
+      if (freshRoom.status === "closed") return { status: 409, body: { error: `Room ${code} is closed` } };
+      if (removedEntry(freshRoom, name)) return { status: 403, body: { error: removedError(freshRoom, code, name) } };
+      if (!freshRoom.participants.some((person) => person.name.toLowerCase() === name.toLowerCase())) freshRoom.participants.push({ name, role: "agent", joined_at: now(), last_read_id: freshRoom.next_message_id - 1, color: nextParticipantColor(freshRoom) });
+      const message = addMessage(freshRoom, name, content);
+      const resolved = resolveAttachments(freshRoom, body.attachments, message.id);
+      if (resolved.length) message.attachments = resolved;
+      saveState(freshState);
+      return { status: 201, body: { message } };
+    });
+    if (outcome.status === 201) notify(code);
+    json(response, outcome.status, outcome.body); return;
   }
 
   if (parts[3] === "viewer" && parts[4] === "messages") {
-    if (room.status === "closed") { json(response, 409, { error: `Room ${code} is closed` }); return; }
-    const name = String(room.viewer_name || "User").trim().slice(0, 80) || "User";
     const content = String(body.content || "").trim();
     const hasAttachments = Array.isArray(body.attachments) && body.attachments.length > 0;
     if (!content && !hasAttachments) { json(response, 400, { error: "Content or an attachment is required" }); return; }
-    if (!room.participants.some((person) => person.name.toLowerCase() === name.toLowerCase())) {
-      room.participants.push({ name, role: "human", joined_at: now(), color: nextParticipantColor(room) });
-      addMessage(room, "Room", `${name} joined the meeting.`, "system");
-    }
-    const message = addMessage(room, name, content, "human");
-    const resolved = resolveAttachments(room, body.attachments, message.id);
-    if (resolved.length) message.attachments = resolved;
-    saveState(state); notify(code);
-    json(response, 201, { message, participants: room.participants }); return;
+    const outcome = await withLock(() => {
+      const freshState = loadState();
+      const freshRoom = freshState.rooms[code];
+      if (!freshRoom) return { status: 404, body: { error: `Room ${code} not found` } };
+      if (freshRoom.status === "closed") return { status: 409, body: { error: `Room ${code} is closed` } };
+      const name = String(freshRoom.viewer_name || "User").trim().slice(0, 80) || "User";
+      if (!freshRoom.participants.some((person) => person.name.toLowerCase() === name.toLowerCase())) {
+        freshRoom.participants.push({ name, role: "human", joined_at: now(), color: nextParticipantColor(freshRoom) });
+        addMessage(freshRoom, "Room", `${name} joined the meeting.`, "system");
+      }
+      const message = addMessage(freshRoom, name, content, "human");
+      const resolved = resolveAttachments(freshRoom, body.attachments, message.id);
+      if (resolved.length) message.attachments = resolved;
+      saveState(freshState);
+      return { status: 201, body: { message, participants: freshRoom.participants } };
+    });
+    if (outcome.status === 201) notify(code);
+    json(response, outcome.status, outcome.body); return;
   }
 
   if (parts[3] === "viewer" && parts[4] === "leave") {
-    const name = String(room.viewer_name || "User").trim().slice(0, 80) || "User";
-    const index = room.participants.findIndex((person) => person.name.toLowerCase() === name.toLowerCase());
-    if (index >= 0) {
-      room.participants.splice(index, 1);
-      addMessage(room, "Room", `${name} left the meeting.`, "system");
-      saveState(state); notify(code);
-    }
-    json(response, 200, publicRoom(room)); return;
+    const outcome = await withLock(() => {
+      const freshState = loadState();
+      const freshRoom = freshState.rooms[code];
+      if (!freshRoom) return { status: 404, body: { error: `Room ${code} not found` }, changed: false };
+      const name = String(freshRoom.viewer_name || "User").trim().slice(0, 80) || "User";
+      const index = freshRoom.participants.findIndex((person) => person.name.toLowerCase() === name.toLowerCase());
+      let changed = false;
+      if (index >= 0) {
+        freshRoom.participants.splice(index, 1);
+        addMessage(freshRoom, "Room", `${name} left the meeting.`, "system");
+        saveState(freshState);
+        changed = true;
+      }
+      return { status: 200, body: publicRoom(freshRoom), changed };
+    });
+    if (outcome.changed) notify(code);
+    json(response, outcome.status, outcome.body); return;
   }
 
   // Human-viewer moderation. Removing an agent drops it from the participant list,
   // blocks join/send/listen for that name (403) and wakes its long-poll so the
   // watcher sees the 403 promptly. Re-admit lifts the block; the agent must rejoin.
   if (parts[3] === "viewer" && parts[4] === "remove") {
-    if (room.status === "closed") { json(response, 409, { error: `Room ${code} is closed` }); return; }
     const name = String(body.name || "").trim().slice(0, 80);
     if (!name) { json(response, 400, { error: "name is required" }); return; }
-    const who = String(room.viewer_name || "User").trim().slice(0, 80) || "User";
-    const index = room.participants.findIndex((person) => sameName(person.name, name));
-    if (sameName(name, room.viewer_name) || (index >= 0 && room.participants[index].role === "human")) { json(response, 400, { error: "The human viewer cannot be removed" }); return; }
-    const display = index >= 0 ? room.participants[index].name : name;
-    if (index >= 0) room.participants.splice(index, 1);
-    if (!Array.isArray(room.removed)) room.removed = [];
-    if (!removedEntry(room, display)) room.removed.push(display);
-    addMessage(room, "Room", `${who} removed ${display} from the meeting.`, "system");
-    saveState(state); notify(code);
-    json(response, 200, publicRoom(room)); return;
+    const outcome = await withLock(() => {
+      const freshState = loadState();
+      const freshRoom = freshState.rooms[code];
+      if (!freshRoom) return { status: 404, body: { error: `Room ${code} not found` } };
+      if (freshRoom.status === "closed") return { status: 409, body: { error: `Room ${code} is closed` } };
+      const who = String(freshRoom.viewer_name || "User").trim().slice(0, 80) || "User";
+      const index = freshRoom.participants.findIndex((person) => sameName(person.name, name));
+      if (sameName(name, freshRoom.viewer_name) || (index >= 0 && freshRoom.participants[index].role === "human")) { return { status: 400, body: { error: "The human viewer cannot be removed" } }; }
+      const display = index >= 0 ? freshRoom.participants[index].name : name;
+      if (index >= 0) freshRoom.participants.splice(index, 1);
+      if (!Array.isArray(freshRoom.removed)) freshRoom.removed = [];
+      if (!removedEntry(freshRoom, display)) freshRoom.removed.push(display);
+      addMessage(freshRoom, "Room", `${who} removed ${display} from the meeting.`, "system");
+      saveState(freshState);
+      return { status: 200, body: publicRoom(freshRoom) };
+    });
+    if (outcome.status === 200) notify(code);
+    json(response, outcome.status, outcome.body); return;
   }
 
   if (parts[3] === "viewer" && parts[4] === "readmit") {
-    if (room.status === "closed") { json(response, 409, { error: `Room ${code} is closed` }); return; }
     const name = String(body.name || "").trim().slice(0, 80);
     if (!name) { json(response, 400, { error: "name is required" }); return; }
-    const who = String(room.viewer_name || "User").trim().slice(0, 80) || "User";
-    const entry = removedEntry(room, name);
-    if (entry) {
-      room.removed = room.removed.filter((candidate) => !sameName(candidate, name));
-      addMessage(room, "Room", `${who} allowed ${entry} to rejoin the meeting.`, "system");
-      saveState(state); notify(code);
-    }
-    json(response, 200, publicRoom(room)); return;
+    const outcome = await withLock(() => {
+      const freshState = loadState();
+      const freshRoom = freshState.rooms[code];
+      if (!freshRoom) return { status: 404, body: { error: `Room ${code} not found` }, changed: false };
+      if (freshRoom.status === "closed") return { status: 409, body: { error: `Room ${code} is closed` }, changed: false };
+      const who = String(freshRoom.viewer_name || "User").trim().slice(0, 80) || "User";
+      const entry = removedEntry(freshRoom, name);
+      let changed = false;
+      if (entry) {
+        freshRoom.removed = freshRoom.removed.filter((candidate) => !sameName(candidate, name));
+        addMessage(freshRoom, "Room", `${who} allowed ${entry} to rejoin the meeting.`, "system");
+        saveState(freshState);
+        changed = true;
+      }
+      return { status: 200, body: publicRoom(freshRoom), changed };
+    });
+    if (outcome.changed) notify(code);
+    json(response, outcome.status, outcome.body); return;
   }
 
   if (parts[3] === "mode") {
     const enabled = Boolean(body.addressed_only);
-    if (room.addressed_only !== enabled) {
-      room.addressed_only = enabled;
-      addMessage(room, "Room", `Only speak when addressed is now ${enabled ? "on" : "off"}.`, "system");
-      saveState(state); notify(code);
-    }
-    json(response, 200, publicRoom(room)); return;
+    const outcome = await withLock(() => {
+      const freshState = loadState();
+      const freshRoom = freshState.rooms[code];
+      if (!freshRoom) return { status: 404, body: { error: `Room ${code} not found` }, changed: false };
+      let changed = false;
+      if (freshRoom.addressed_only !== enabled) {
+        freshRoom.addressed_only = enabled;
+        addMessage(freshRoom, "Room", `Only speak when addressed is now ${enabled ? "on" : "off"}.`, "system");
+        saveState(freshState);
+        changed = true;
+      }
+      return { status: 200, body: publicRoom(freshRoom), changed };
+    });
+    if (outcome.changed) notify(code);
+    json(response, outcome.status, outcome.body); return;
   }
 
   if (parts[3] === "leave") {
     const name = String(body.name || "Agent").trim().slice(0, 80) || "Agent";
-    const index = room.participants.findIndex((person) => person.name.toLowerCase() === name.toLowerCase());
-    if (index >= 0) {
-      room.participants.splice(index, 1);
-      addMessage(room, "Room", `${name} left the meeting.`, "system");
-      saveState(state); notify(code);
-    }
-    json(response, 200, publicRoom(room)); return;
+    const outcome = await withLock(() => {
+      const freshState = loadState();
+      const freshRoom = freshState.rooms[code];
+      if (!freshRoom) return { status: 404, body: { error: `Room ${code} not found` }, changed: false };
+      const index = freshRoom.participants.findIndex((person) => person.name.toLowerCase() === name.toLowerCase());
+      let changed = false;
+      if (index >= 0) {
+        freshRoom.participants.splice(index, 1);
+        addMessage(freshRoom, "Room", `${name} left the meeting.`, "system");
+        saveState(freshState);
+        changed = true;
+      }
+      return { status: 200, body: publicRoom(freshRoom), changed };
+    });
+    if (outcome.changed) notify(code);
+    json(response, outcome.status, outcome.body); return;
   }
 
   if (parts[3] === "close") {
     const name = String(body.name || "Host").trim().slice(0, 80) || "Host";
     const summary = String(body.summary || "Meeting concluded.").trim().slice(0, 10000) || "Meeting concluded.";
-    // Only the creator (chair) or the human viewer may close. Any other agent gets a
-    // 403 with guidance, so an over-eager model cannot end a meeting for everyone.
-    // A removed name loses every privilege, creator included: "remove" must fully sever control.
-    if (room.status !== "closed" && removedEntry(room, name)) { json(response, 403, { error: removedError(room, code, name) }); return; }
-    const mayClose = sameName(name, room.created_by) || sameName(name, room.viewer_name)
-      || room.participants.some((person) => person.role === "human" && sameName(person.name, name));
-    if (!mayClose && room.status !== "closed") {
-      json(response, 403, { error: `Only the room creator (${room.created_by || "Host"}) or the human viewer (${room.viewer_name || "User"}) can close ${code}. Post your final message and keep listening, or leave the room instead.` }); return;
-    }
-    let changed = false;
-    if (room.status !== "closed") {
-      room.status = "closed"; room.summary = summary;
-      addMessage(room, name, `Meeting closed. ${summary}`, "summary");
-      changed = true;
-    }
-    if (room.participants.length) { room.participants = []; changed = true; }
-    if (changed) { saveState(state); notify(code); }
-    flushTranscripts(state);
-    json(response, 200, publicRoom(room)); return;
+    const outcome = await withLock(() => {
+      const freshState = loadState();
+      const freshRoom = freshState.rooms[code];
+      if (!freshRoom) return { status: 404, body: { error: `Room ${code} not found` }, changed: false };
+      // Only the creator (chair) or the human viewer may close. Any other agent gets a
+      // 403 with guidance, so an over-eager model cannot end a meeting for everyone.
+      // A removed name loses every privilege, creator included: "remove" must fully sever control.
+      if (freshRoom.status !== "closed" && removedEntry(freshRoom, name)) return { status: 403, body: { error: removedError(freshRoom, code, name) }, changed: false };
+      const mayClose = sameName(name, freshRoom.created_by) || sameName(name, freshRoom.viewer_name)
+        || freshRoom.participants.some((person) => person.role === "human" && sameName(person.name, name));
+      if (!mayClose && freshRoom.status !== "closed") {
+        return { status: 403, body: { error: `Only the room creator (${freshRoom.created_by || "Host"}) or the human viewer (${freshRoom.viewer_name || "User"}) can close ${code}. Post your final message and keep listening, or leave the room instead.` }, changed: false };
+      }
+      let changed = false;
+      if (freshRoom.status !== "closed") {
+        freshRoom.status = "closed"; freshRoom.summary = summary;
+        addMessage(freshRoom, name, `Meeting closed. ${summary}`, "summary");
+        changed = true;
+      }
+      if (freshRoom.participants.length) { freshRoom.participants = []; changed = true; }
+      if (changed) { saveState(freshState); flushTranscripts(freshState); }
+      return { status: 200, body: publicRoom(freshRoom), changed };
+    });
+    if (outcome.changed) notify(code);
+    json(response, outcome.status, outcome.body); return;
   }
 
   json(response, 404, { error: "Not found" });
