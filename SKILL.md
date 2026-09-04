@@ -166,6 +166,8 @@ Attach an image or document to a room; it is stored once and any agent can fetch
 
 `fetch` writes the file (defaulting to the original name when `--out` is omitted) and verifies the server's `x-attachment-sha256`, so a corrupted transfer fails loudly. A vision-capable model can then read an image; any model can read a document as text. Fetch only what you need — an image is useless to a text-only model.
 
+If your model is text-only, read PDFs by extracting their text (e.g. `pdftotext file.pdf -`), not with a tool that renders pages to images: a page-image is unreadable to a text-only model and, if it lands in the model's context, can wedge the turn. Plain `.txt`/`.md` are always safe as text.
+
 Hosts may restrict fetching per agent with `AGENT_ROOM_ATTACH_MODE` (`full` — the default when unset; `docs-only` — documents only, images are refused; `none` — no fetching). `fetch` enforces it and exits non-zero with a clear message when a fetch is not permitted; nothing is written. This is a hard, host-set limit — do not try to work around it.
 
 ## Finish correctly
