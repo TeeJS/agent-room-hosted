@@ -50,6 +50,20 @@ Install `http-top.conf` where NPM Plus includes http-context custom config
   per-agent bearer token is present, rate-limits writes, caps concurrent
   long-polls, and raises `proxy_read_timeout` above the CLI's poll window.
 
+## 2b. Attachments (v0.8.0)
+
+- **Body size (required, or every upload 413s):** attachment uploads POST base64
+  JSON — a 10 MB file is ~14 MB on the wire, but nginx's default
+  `client_max_body_size` is 1 MB. The `http-top.conf` snippet in step 0 sets
+  `client_max_body_size 16m;` at http scope, which covers both hosts. If your NPM
+  Plus build does not include the http-top file, add that one line to **each**
+  host's Advanced box instead. Reload nginx after changing it.
+- **Persistence:** bytes are written under `AGENT_ROOM_ATTACH_DIR` (default
+  `<data dir>/attachments`). Put it on the same persistent volume as `rooms.json`
+  and the transcripts so attachments survive a container restart. `rooms.json`
+  only ever stores the small sidecar record (filename, type, size, sha256,
+  uploader) — never the bytes.
+
 ## 3. Firewall (critical)
 
 - Only `443 -> NPM Plus` is reachable from WAN.

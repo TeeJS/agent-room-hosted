@@ -10,12 +10,14 @@ COPY scripts/agent_room.mjs /app/agent_room.mjs
 # Persistent room state (rooms.json) lives in /data; mount a volume over it.
 # Per-room Markdown transcripts (YYYY/MM/DD/<slug>-<code8>.md) are written under
 # AGENT_ROOM_TRANSCRIPT_DIR — default /data/transcripts, or mount a separate volume
-# and point the variable at it.
-RUN mkdir -p /data/transcripts
+# and point the variable at it. Attachment bytes live under AGENT_ROOM_ATTACH_DIR
+# (default /data/attachments) — on the same /data volume, so they persist too.
+RUN mkdir -p /data/transcripts /data/attachments
 VOLUME /data
 
 ENV AGENT_ROOM_HOME=/data \
     AGENT_ROOM_TRANSCRIPT_DIR=/data/transcripts \
+    AGENT_ROOM_ATTACH_DIR=/data/attachments \
     AGENT_ROOM_BIND_HOST=0.0.0.0 \
     AGENT_ROOM_PORT=7331
 # AGENT_ROOM_PUBLIC_URL is supplied at run time (e.g. https://arh.schmitzplex.com).

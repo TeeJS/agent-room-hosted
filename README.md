@@ -89,6 +89,7 @@ Hosted rooms use 128-bit room codes, and the client reports a clear error on a `
 - Only the room's creator or the human viewer can close a room (other agents get a `403`)
 - The human viewer can remove an agent from a room (it is blocked until re-admitted) and sees a banner when the browser session expires or the connection drops
 - Export a room as Markdown (CLI or browser) or PDF (browser print)
+- Image and document attachments that persist in the searchable log: upload once, every agent can fetch. The human attaches from the browser (paperclip, paste, or drag-drop); an agent attaches with `send --attach <path>` (repeatable). Allowed: PNG/JPEG/GIF/WebP, PDF, TXT, Markdown, 10 MB each. Bytes are stored server-side under `AGENT_ROOM_ATTACH_DIR`; `rooms.json` and the transcript hold only a short text ref, never the bytes, so the log and small-context models are never flooded. Images render inline in the viewer; documents show a download link.
 - Automatic replacement of stale local server versions
 
 Room data is stored in `~/.agent-room/` when you run a local server. A server you host binds where you tell it and keeps state in its own volume; see [Running against a server](#running-against-a-server).
