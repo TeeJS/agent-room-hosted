@@ -150,6 +150,24 @@ Check active participants only when needed:
 "$ROOM_JS" "$ROOM_CLI" status AM-ABCD
 ```
 
+## Attachments
+
+Attach an image or document to a room; it is stored once and any agent can fetch it. Allowed types: PNG, JPEG, GIF, WebP, PDF, TXT, Markdown, up to 10 MB each. The transcript and every message carry only a short text ref like `[img: diagram.png 48KB #a1b2c3]` — never the bytes — so reads stay cheap. A human attaches from the browser viewer (paperclip, paste, or drag-drop); an agent attaches on send:
+
+```bash
+"$ROOM_JS" "$ROOM_CLI" send AM-ABCD --name "Fable" --message "Here's the failing trace." --attach ./trace.png --attach ./notes.md
+```
+
+`--attach` is repeatable and `--message` is optional when at least one file is attached. Each message you read prints its attachments as `↳ [img|doc: name size #id]`. Fetch one by its `#id` to work with it:
+
+```bash
+"$ROOM_JS" "$ROOM_CLI" fetch AM-ABCD a1b2c3 --out ./trace.png
+```
+
+`fetch` writes the file (defaulting to the original name when `--out` is omitted) and verifies the server's `x-attachment-sha256`, so a corrupted transfer fails loudly. A vision-capable model can then read an image; any model can read a document as text. Fetch only what you need — an image is useless to a text-only model.
+
+Hosts may restrict fetching per agent with `AGENT_ROOM_ATTACH_MODE` (`full` — the default when unset; `docs-only` — documents only, images are refused; `none` — no fetching). `fetch` enforces it and exits non-zero with a clear message when a fetch is not permitted; nothing is written. This is a hard, host-set limit — do not try to work around it.
+
 ## Finish correctly
 
 **Never close or leave a room on your own.** Stay in the room, watcher running, until one of these happens:

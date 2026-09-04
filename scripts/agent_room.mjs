@@ -75,7 +75,7 @@ const ATTACH_TYPES = {
 };
 const ATTACH_EXT_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf", txt: "text/plain", md: "text/markdown", markdown: "text/markdown" };
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
-const VERSION = "0.8.0";
+const VERSION = "0.8.1";
 const waiters = new Map();
 const LEGACY_PARTICIPANT_COLORS = ["#A9C7FF", "#FFB4A9", "#A8E6CF", "#FFD6A5", "#D5B8FF", "#9EE7E5", "#F7B7D2", "#C7E9A0", "#F6C7A8", "#B9C6FF"];
 const PARTICIPANT_COLORS = ["#5B8CFF", "#FF6B5E", "#34C77B", "#F2B134", "#A970FF", "#20B8CC", "#F05DAA", "#78C442", "#F28A3E", "#6E79FF"];
@@ -948,7 +948,7 @@ function required(args, key) {
 async function main() {
   const command = process.argv[2];
   const args = argsOf(process.argv.slice(3));
-  if (!command) { console.log("Usage: agent_room.mjs <start|stop|create|invite|join|send|listen|status|leave|transcript|export|close|open>"); return; }
+  if (!command) { console.log("Usage: agent_room.mjs <start|stop|create|invite|join|send|fetch|listen|status|leave|transcript|export|close|open>"); return; }
   if (command === "serve") { startServer(); return; }
   if (args["user-name"]) {
     const userName = String(args["user-name"]).trim().slice(0, 80);
@@ -1005,6 +1005,45 @@ async function main() {
     }
     return;
   }
+  if (command === "fetch") {
+    // Download an attachment referenced in a message (its #id). Pairs with `send --attach`.
+    // Uses a raw fetch (not api(), which parses bodies as text/JSON and would corrupt bytes),
+    // then hard-verifies the x-attachment-sha256 the server returns.
+    const id = String(args._[1] || "").trim();
+    if (!id) throw new Error("Usage: fetch <room-code> <attachment-id> [--out <path>]");
+    // Per-group hard gate. The host (e.g. NanoClaw) sets AGENT_ROOM_ATTACH_MODE per agent;
+    // fetch is the chokepoint the agent always goes through, so enforcement lives HERE and
+    // cannot be bypassed from inside the container. Type is taken from the server response,
+    // never from an agent-supplied argument, so it can't be spoofed. Unset => full.
+    const attachMode = String(process.env.AGENT_ROOM_ATTACH_MODE || "full").trim().toLowerCase();
+    if (attachMode === "none") throw new Error(`blocked: this agent's attachment mode is 'none'; fetching attachments is not permitted`);
+    const headers = {};
+    if (TOKEN) headers["authorization"] = `Bearer ${TOKEN}`;
+    const response = await fetch(`${REMOTE_URL}/api/rooms/${roomCode}/attachments/${encodeURIComponent(id)}`, { headers });
+    if (!response.ok) {
+      let reason = `HTTP ${response.status} from ${REMOTE_URL}`;
+      try { const parsed = JSON.parse(await response.text()); if (parsed?.error) reason = `${response.status}: ${parsed.error}`; } catch {}
+      throw new Error(`Could not fetch ${id}: ${reason}`);
+    }
+    const contentType = response.headers.get("content-type") || "application/octet-stream";
+    // docs-only: refuse images from the server-declared type BEFORE buffering the body,
+    // so the bytes are never read into memory and the file is never written.
+    if (attachMode === "docs-only" && /^image\//i.test(contentType)) {
+      throw new Error(`blocked: this agent is docs-only; image attachments (${contentType}) are not permitted. Nothing saved.`);
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const digest = response.headers.get("x-attachment-sha256");
+    const actual = crypto.createHash("sha256").update(buffer).digest("hex");
+    if (digest && digest !== actual) throw new Error(`Integrity check FAILED for ${id}: server sha256 ${digest} != downloaded ${actual}`);
+    let outPath = args.out && args.out !== true ? String(args.out) : "";
+    if (!outPath) {
+      const match = /filename="?([^"]+)"?/.exec(response.headers.get("content-disposition") || "");
+      outPath = match ? path.basename(match[1]) : id;
+    }
+    fs.writeFileSync(outPath, buffer);
+    console.log(`Saved ${id} -> ${outPath} (${contentType}, ${buffer.length} bytes)${digest ? `; sha256 ${actual.slice(0, 12)} verified` : ""}.`);
+    return;
+  }
   if (command === "listen") {
     const name = required(args, "name"); const wait = Math.min(300, Math.max(0, Number(args.wait || 45)));
     const result = await api("GET", `/api/rooms/${roomCode}/messages?name=${encodeURIComponent(name)}&wait=${wait}`, undefined, (wait + 5) * 1000);
@@ -1042,7 +1081,7 @@ async function main() {
     spawn(opener, openerArgs, { detached: true, stdio: "ignore" }).unref();
     console.log(room.viewer_url); return;
   }
-  console.log("Usage: agent_room.mjs <start|stop|create|invite|join|send|listen|status|leave|transcript|export|close|open>");
+  console.log("Usage: agent_room.mjs <start|stop|create|invite|join|send|fetch|listen|status|leave|transcript|export|close|open>");
 }
 
 main().catch((error) => { console.error(`Error: ${error.message}`); process.exit(1); });
