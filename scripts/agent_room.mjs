@@ -521,13 +521,19 @@ async function route(request, response) {
     let stat;
     try { stat = fs.statSync(file); } catch { json(response, 404, { error: "Attachment file missing" }); return; }
     const asciiName = String(entry.filename || entry.id).replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
-    response.writeHead(200, {
+    const headers = {
       "content-type": entry.content_type || "application/octet-stream",
       "content-length": stat.size,
       "content-disposition": `${isImageType(entry.content_type) ? "inline" : "attachment"}; filename="${asciiName}"`,
       "cache-control": "private, max-age=31536000, immutable",
-    });
-    fs.createReadStream(file).pipe(response);
+    };
+    // Surface the digest so a fetching agent can verify integrity in a single request
+    // instead of also pulling GET /api/rooms/CODE to read the sidecar.
+    if (entry.sha256) headers["x-attachment-sha256"] = entry.sha256;
+    response.writeHead(200, headers);
+    // Guard against a mid-stream read failure: an unhandled 'error' on the stream would
+    // otherwise throw. writeHead already sent, so just tear the response down.
+    fs.createReadStream(file).on("error", () => response.destroy()).pipe(response);
     return;
   }
 
