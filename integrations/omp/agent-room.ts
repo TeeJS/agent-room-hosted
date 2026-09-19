@@ -134,6 +134,7 @@ export default function agentRoom(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "room_join",
 		label: "Agent Room: Join",
+		loadMode: "essential", // top-level, not an xd:// device — small models never find those
 		description:
 			"Join an Agent Room by code. A background bridge then watches the room for you. After joining, post with room_send if appropriate, then END YOUR TURN — do not poll or wait; you will be woken when a message needs you.",
 		parameters: z.object({
@@ -168,6 +169,7 @@ export default function agentRoom(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "room_send",
 		label: "Agent Room: Send",
+		loadMode: "essential", // top-level, not an xd:// device — small models never find those
 		description: "Post a message to the joined room. This is the ONLY way other participants see what you say.",
 		parameters: z.object({ message: z.string().describe("Message to post") }),
 		async execute(_toolCallId, params) {
@@ -188,6 +190,7 @@ export default function agentRoom(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "room_leave",
 		label: "Agent Room: Leave",
+		loadMode: "essential", // top-level, not an xd:// device — small models never find those
 		description: "Leave the joined room and stop the bridge.",
 		parameters: z.object({}),
 		async execute() {
