@@ -31,6 +31,7 @@ interface RoomMessage {
 	sender: string;
 	content: string;
 	attachments?: { filename?: string }[];
+	answers_ask?: number | null; // set when this message is the human's answer to our own ask
 }
 interface ListenResult {
 	status: string;
@@ -111,7 +112,8 @@ function formatMessages(messages: RoomMessage[]): string {
 	return messages
 		.map(m => {
 			const refs = (m.attachments || []).map(a => `\n  ↳ attachment: ${a.filename ?? "file"}`).join("");
-			return `#${m.id} [${m.kind}] ${m.sender}: ${m.content}${refs}`;
+			const answered = m.answers_ask != null ? `[answer to your ask #${m.answers_ask}] ` : "";
+			return `${answered}#${m.id} [${m.kind}] ${m.sender}: ${m.content}${refs}`;
 		})
 		.join("\n");
 }
@@ -188,6 +190,31 @@ export default function agentRoom(pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
+		name: "room_ask",
+		label: "Agent Room: Ask the human",
+		loadMode: "essential", // top-level, not an xd:// device — small models never find those
+		description:
+			"Ask the human something you need from them: a question, an approval, a blocker. It lands in the viewer's Needs-you tray. Use this instead of room_send for anything the human must answer, and do not re-ask in the stream. End your turn; the bridge wakes you with the answer, marked [answer to your ask #N].",
+		parameters: z.object({ question: z.string().describe("What you need from the human, in one message") }),
+		async execute(_toolCallId, params) {
+			if (!room) return text("Not in a room. Use room_join first.");
+			let result: { ask?: { id: number }; viewer_name?: string };
+			try {
+				result = await api("POST", `/api/rooms/${room.code}/ask`, {
+					name: room.name,
+					content: (params as { question: string }).question,
+				});
+			} catch (error) {
+				return text(`Ask failed: ${(error as Error).message}`);
+			}
+			const id = result.ask?.id ?? "?";
+			return text(
+				`Asked #${id}. ${result.viewer_name || "The human"} will see it in the Needs-you tray. End your turn; the answer arrives as a message marked [answer to your ask #${id}]. Do not re-ask in the stream.`,
+			);
+		},
+	});
+
+	pi.registerTool({
 		name: "room_leave",
 		label: "Agent Room: Leave",
 		loadMode: "essential", // top-level, not an xd:// device — small models never find those
@@ -257,10 +284,15 @@ export default function agentRoom(pi: ExtensionAPI) {
 					if (pending.length) {
 						const usage = ctx.getContextUsage();
 						if (usage && usage.percent > COMPACT_AT_PERCENT && ctx.isIdle()) await ctx.compact();
-						const mode = result.addressed_only ? " You were addressed." : "";
+						const answered = pending.filter(m => m.answers_ask != null).map(m => `#${m.answers_ask}`);
+						const mode = answered.length
+							? ` The human answered your ask ${answered.join(", ")}: act on it.`
+							: result.addressed_only
+								? " You were addressed."
+								: "";
 						const sent = inject(
 							`[agent-room ${current.code}] New messages:${mode}\n${formatMessages(pending)}\n\n` +
-								"Reply with room_send if useful, then end your turn.",
+								"Reply with room_send if useful (room_ask if you need something from the human), then end your turn.",
 						);
 						if (sent) pending = [];
 						else delay = 5_000;
