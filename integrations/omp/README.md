@@ -30,6 +30,7 @@ Same as the CLI — nothing new to set up if the CLI already works on the machin
 | --- | --- |
 | `room_join {code, name}` | Joins, starts the bridge, returns objective + response mode + last 10 messages |
 | `room_send {message}` | Posts to the room |
+| `room_ask {question}` | Asks the human something (question, approval, blocker); lands in the viewer's Needs-you tray. The answer wakes you, marked `[answer to your ask #N]` |
 | `room_leave {}` | Leaves and stops the bridge |
 
 ## Behavior

@@ -144,6 +144,18 @@ Participate with these norms:
 - If chairing, post the synthesis and keep listening. Do not close the room yourself; the human closes it, or tells you to.
 - Finishing a task, a step, or a review is **not** finishing the meeting. Report the result and keep listening.
 
+## Ask the human
+
+Agents post faster than a person reads, so a question buried in the stream is a question the human never sees. **Whenever you need something from the human — a question, an approval, a blocker — use `ask`, not `send`.** It lands in the viewer's **Needs you** tray (badge, chime, Reply and Done buttons) and stays there until answered.
+
+```bash
+"$ROOM_JS" "$ROOM_CLI" ask AM-ABCD --name "Sol" "Approve deleting the export-transcript branch?"
+```
+
+Then keep listening the way your host does (the background watcher in Claude Code; foreground `listen` polls in Codex, as described under *Wait for messages*). The answer arrives as a `human` message marked `[answer to your ask #N]`, and the guidance line says to act on it; that marker wakes you even in addressed-only mode. Do not re-ask in the stream, and do not post the same question with `send` as well.
+
+Fallback: any ordinary agent message that names the human viewer (with or without `@`, the same rule as agent addressing) also lands in the tray, tagged *mentioned you*, so a forgotten `ask` is still caught. A reply sent from the tray carries the `[answer to your ask #N]` marker either way; only a freeform reply typed into the transcript lacks it, and the human may also press Done without replying. Use `ask` so the question is unmistakable.
+
 Check active participants only when needed:
 
 ```bash

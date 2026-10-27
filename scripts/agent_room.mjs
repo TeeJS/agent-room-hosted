@@ -75,7 +75,7 @@ const ATTACH_TYPES = {
 };
 const ATTACH_EXT_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf", txt: "text/plain", md: "text/markdown", markdown: "text/markdown" };
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
-const VERSION = "0.8.3";
+const VERSION = "0.9.0";
 const waiters = new Map();
 const LEGACY_PARTICIPANT_COLORS = ["#A9C7FF", "#FFB4A9", "#A8E6CF", "#FFD6A5", "#D5B8FF", "#9EE7E5", "#F7B7D2", "#C7E9A0", "#F6C7A8", "#B9C6FF"];
 const PARTICIPANT_COLORS = ["#5B8CFF", "#FF6B5E", "#34C77B", "#F2B134", "#A970FF", "#20B8CC", "#F05DAA", "#78C442", "#F28A3E", "#6E79FF"];
@@ -198,6 +198,7 @@ function migrateState() {
     if (typeof room.addressed_only !== "boolean") { room.addressed_only = false; changed = true; }
     if (!Array.isArray(room.removed)) { room.removed = []; changed = true; }
     if (!room.attachments || typeof room.attachments !== "object") { room.attachments = {}; changed = true; }
+    if (!Array.isArray(room.asks)) { room.asks = []; changed = true; }
     for (const [index, participant] of (room.participants || []).entries()) {
       if (!participant.role) { participant.role = "agent"; changed = true; }
       if (!Number.isFinite(participant.last_read_id)) { participant.last_read_id = latest; changed = true; }
@@ -256,9 +257,35 @@ function addMessage(room, sender, content, kind = "agent") {
 }
 
 function addressedTo(message, name) {
-  if (!name || !["agent", "human"].includes(message.kind)) return false;
+  if (!name || !["agent", "human", "ask"].includes(message.kind)) return false;
   const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(^|[^\\p{L}\\p{N}_])@?${escapedName}(?=$|[^\\p{L}\\p{N}_])`, "iu").test(message.content);
+}
+
+// ---- Asks ("Needs you" tray) ----------------------------------------------------
+// An ask is something an agent needs from the human: a question, an approval, a blocker.
+// Explicit asks come from POST /ask (kind "ask"); implicit ones are ordinary agent messages
+// that @-mention the viewer's name (fallback for agents that forget the command). Each ask
+// is keyed by the id of the message that raised it, so "#N" means the same thing in the
+// transcript, the tray and the watcher output. Answering from the tray posts a human
+// message addressed to the asker and records its id so the asker's watcher can flag it.
+function addAsk(room, message, implicit) {
+  if (!Array.isArray(room.asks)) room.asks = [];
+  const ask = {
+    id: message.id, sender: message.sender, content: message.content, implicit: Boolean(implicit),
+    status: "open", created_at: message.created_at, answer: null, answer_message_id: null, answered_at: null,
+  };
+  room.asks.push(ask);
+  return ask;
+}
+
+const openAsks = (room) => (room.asks || []).filter((ask) => ask.status === "open");
+
+// The id of the ask (if any) that `message` answers, from `name`'s point of view.
+function answersAskOf(room, message, name) {
+  if (!name) return null;
+  const ask = (room.asks || []).find((candidate) => candidate.answer_message_id === message.id && sameName(candidate.sender, name));
+  return ask ? ask.id : null;
 }
 
 const sameName = (a, b) => String(a || "").toLowerCase() === String(b || "").toLowerCase();
@@ -313,6 +340,7 @@ const attachmentRefText = (attachment) => `[${isImageType(attachment.content_typ
 function publicRoom(room) {
   const { next_message_id, ...visible } = room;
   visible.participants = room.participants.map(({ last_read_id, ...participant }) => participant);
+  visible.asks = openAsks(room); // the tray only ever needs open items; history stays in the transcript
   return { ...visible, viewer_url: `${PUBLIC_URL}/rooms/${room.code}`, invitation: invitation(room) };
 }
 
@@ -441,7 +469,7 @@ async function route(request, response) {
         viewer_name: viewerName,
         created_at: now(), updated_at: now(),
         participants: [{ name: creator, role: "agent", joined_at: now(), last_read_id: 0, color: PARTICIPANT_COLORS[0] }],
-        messages: [], next_message_id: 1, summary: "", addressed_only: false,
+        messages: [], next_message_id: 1, summary: "", addressed_only: false, asks: [],
       };
       addMessage(newRoom, "Room", `${creator} created the meeting. Objective: ${objective}`, "system");
       newRoom.participants[0].last_read_id = newRoom.next_message_id - 1;
@@ -516,9 +544,12 @@ async function route(request, response) {
     const deliveredMessages = messages.map((message) => ({
       ...message,
       addressed_to_you: Boolean(name && addressedTo(message, name)),
+      answers_ask: answersAskOf(room, message, name),
     }));
+    // An answer to the caller's own ask always wakes it, whatever the response mode.
+    // Asks themselves (kind "ask") are aimed at the human and never wake other agents.
     const shouldRespond = deliveredMessages.some((message) =>
-      ["agent", "human"].includes(message.kind) && (!room.addressed_only || message.addressed_to_you)
+      message.answers_ask != null || (["agent", "human"].includes(message.kind) && (!room.addressed_only || message.addressed_to_you))
     );
     json(response, 200, {
       room: code,
@@ -528,6 +559,7 @@ async function route(request, response) {
       should_respond: shouldRespond,
       participants: room.participants,
       removed: room.removed || [],
+      asks: openAsks(room),
       latest_message_id: latestMessageId,
       messages: deliveredMessages,
     }); return;
@@ -643,10 +675,70 @@ async function route(request, response) {
       const message = addMessage(freshRoom, name, content);
       const resolved = resolveAttachments(freshRoom, body.attachments, message.id);
       if (resolved.length) message.attachments = resolved;
+      // Fallback: an agent message that names the human viewer lands in the Needs-you tray too.
+      if (content && !sameName(name, freshRoom.viewer_name) && addressedTo(message, freshRoom.viewer_name)) addAsk(freshRoom, message, true);
       saveState(freshState);
       return { status: 201, body: { message } };
     });
     if (outcome.status === 201) notify(code);
+    json(response, outcome.status, outcome.body); return;
+  }
+
+  // Explicit ask: the agent needs something from the human. Stored as a message of kind
+  // "ask" (so it is in the transcript) plus an open entry in room.asks for the tray.
+  if (parts[3] === "ask" && parts.length === 4) {
+    const name = String(body.name || "Agent").trim().slice(0, 80) || "Agent";
+    const content = String(body.content || "").trim();
+    if (!content) { json(response, 400, { error: "Content is required" }); return; }
+    const outcome = await withLock(() => {
+      const freshState = loadState();
+      const freshRoom = freshState.rooms[code];
+      if (!freshRoom) return { status: 404, body: { error: `Room ${code} not found` } };
+      if (freshRoom.status === "closed") return { status: 409, body: { error: `Room ${code} is closed` } };
+      if (removedEntry(freshRoom, name)) return { status: 403, body: { error: removedError(freshRoom, code, name) } };
+      if (!freshRoom.participants.some((person) => sameName(person.name, name))) freshRoom.participants.push({ name, role: "agent", joined_at: now(), last_read_id: freshRoom.next_message_id - 1, color: nextParticipantColor(freshRoom) });
+      const message = addMessage(freshRoom, name, content, "ask");
+      const ask = addAsk(freshRoom, message, false);
+      saveState(freshState);
+      return { status: 201, body: { message, ask, viewer_name: freshRoom.viewer_name } };
+    });
+    if (outcome.status === 201) notify(code);
+    json(response, outcome.status, outcome.body); return;
+  }
+
+  // Human viewer answers or dismisses an ask from the tray. Answering posts a human
+  // message "@Asker <answer>" and records its id on the ask so the asker's next poll
+  // carries answers_ask = <id> (and should_respond = true) even in addressed-only mode.
+  if (parts[3] === "asks" && parts.length === 6 && (parts[5] === "answer" || parts[5] === "dismiss")) {
+    const askId = Number(parts[4]);
+    const action = parts[5];
+    const answer = String(body.answer || "").trim().slice(0, 20000);
+    if (action === "answer" && !answer) { json(response, 400, { error: "answer is required" }); return; }
+    const outcome = await withLock(() => {
+      const freshState = loadState();
+      const freshRoom = freshState.rooms[code];
+      if (!freshRoom) return { status: 404, body: { error: `Room ${code} not found` }, changed: false };
+      const ask = (freshRoom.asks || []).find((candidate) => candidate.id === askId);
+      if (!ask) return { status: 404, body: { error: `Ask #${askId} not found in ${code}` }, changed: false };
+      if (ask.status !== "open") return { status: 200, body: { ask, asks: openAsks(freshRoom), participants: freshRoom.participants }, changed: false };
+      if (action === "answer" && freshRoom.status === "closed") return { status: 409, body: { error: `Room ${code} is closed` }, changed: false };
+      const who = String(freshRoom.viewer_name || "User").trim().slice(0, 80) || "User";
+      let message = null;
+      if (action === "answer") {
+        if (!freshRoom.participants.some((person) => sameName(person.name, who))) {
+          freshRoom.participants.push({ name: who, role: "human", joined_at: now(), color: nextParticipantColor(freshRoom) });
+          addMessage(freshRoom, "Room", `${who} joined the meeting.`, "system");
+        }
+        message = addMessage(freshRoom, who, `@${ask.sender} ${answer}`, "human");
+        ask.answer = answer; ask.answer_message_id = message.id; ask.status = "answered";
+      } else {
+        ask.status = "dismissed";
+      }
+      ask.answered_at = now();
+      saveState(freshState);
+      return { status: 200, body: { ask, message, asks: openAsks(freshRoom), participants: freshRoom.participants }, changed: true };
+    });
+    if (outcome.changed) notify(code);
     json(response, outcome.status, outcome.body); return;
   }
 
@@ -836,6 +928,7 @@ const ICONS = {
   download: icon("M5 20h14v-2H5v2ZM19 9h-4V3H9v6H5l7 7 7-7Z"),
   close: icon("M18.3 5.7 12 12l6.3 6.3-1.4 1.4L12 13.4l-6.3 6.3-1.4-1.4L10.6 12 4.3 5.7l1.4-1.4L12 10.6l6.3-6.3 1.4 1.4Z"),
   clip: icon("M16.5 6.5v10a4.5 4.5 0 1 1-9 0V5a3 3 0 0 1 6 0v9.5a1.5 1.5 0 0 1-3 0V6H8v8.5a3 3 0 0 0 6 0V5a4.5 4.5 0 0 0-9 0v11.5a6 6 0 0 0 12 0v-10h-1.5Z"),
+  bell: icon("M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-6V11c0-3.07-1.63-5.64-4.5-6.32V4a2.5 2.5 0 0 0-5 0v.68C6.63 5.36 5 7.92 5 11v5l-2 2v1h18v-1l-2-2Z"),
 };
 
 function meetingPage(room) {
@@ -846,7 +939,8 @@ function meetingPage(room) {
 :root{--bg:#0e1014;--rail:#15181e;--surface:#1b1f26;--surface2:#222730;--line:#2c323c;--text:#f4f6f8;--muted:#929aa6;--green:#34C77B;--blue:#5B8CFF;--red:#ff665d}*{box-sizing:border-box}html,body{height:100%;margin:0}body{overflow:hidden;background:var(--bg);color:var(--text);font-family:"Avenir Next","Segoe UI",sans-serif}.app{height:100%;display:grid;grid-template-rows:70px minmax(0,1fr)}.top{display:flex;align-items:center;justify-content:space-between;padding:0 22px;border-bottom:1px solid var(--line);background:rgba(14,16,20,.96)}.title{min-width:0}.title h1{font-size:17px;line-height:1.2;margin:0;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.meta{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;margin-top:5px}.status-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px rgba(52,199,123,.14)}.actions{display:flex;align-items:center;gap:8px}.button{height:40px;border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--text);padding:0 13px;display:flex;align-items:center;gap:8px;font:600 12px inherit;cursor:pointer;transition:.15s}.button:hover{background:var(--surface2);border-color:#3c4450}.button svg{width:17px;height:17px;fill:currentColor}.button.mode.active{background:#213c30;border-color:#31835b;color:#84e6ae}.mode-light{width:8px;height:8px;border-radius:50%;background:#68717d}.button.mode.active .mode-light{background:var(--green);box-shadow:0 0 0 3px rgba(52,199,123,.16)}.button.leave{width:42px;padding:0;justify-content:center;background:#3b2022;border-color:#5a292d;color:#ff8e87}.button.close-room{background:#3b2022;border-color:#5a292d;color:#ff8e87}.button.close-room:hover{background:#4a2629;border-color:#7a3a40}.button.close-room:disabled{opacity:.45;cursor:not-allowed}.workspace{display:grid;grid-template-columns:240px minmax(0,1fr);min-height:0}.rail{min-height:0;border-right:1px solid var(--line);background:var(--rail);padding:20px 14px;overflow:auto}.rail-label{font-size:10px;font-weight:800;letter-spacing:.13em;text-transform:uppercase;color:#6f7782;margin:0 8px 10px}.objective{padding:13px 14px;background:var(--surface);border:1px solid var(--line);border-radius:12px;font-size:12px;line-height:1.48;color:#b2b9c3;margin-bottom:22px}.people{display:flex;flex-direction:column;gap:5px}.person{--person:#5B8CFF;display:flex;align-items:center;gap:10px;padding:8px;border-radius:10px}.person.active{background:var(--surface)}.person-avatar,.message-avatar{flex:0 0 auto;display:grid;place-items:center;border-radius:9px;background:color-mix(in srgb,var(--person) 28%,var(--surface2));color:var(--person);font-weight:800;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--person) 55%,transparent)}.person-avatar{width:32px;height:32px;font-size:12px}.person-copy{min-width:0}.person-name{font-size:13px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.person-role{font-size:10px;color:var(--muted);margin-top:2px;text-transform:capitalize}.presence{width:7px;height:7px;border-radius:50%;background:var(--green);margin-left:auto}.conversation{min-width:0;min-height:0;display:grid;grid-template-rows:minmax(0,1fr) auto;background:radial-gradient(circle at 50% -20%,#1b2029 0,transparent 42%),var(--bg)}.thread{overflow:auto;padding:28px clamp(18px,5vw,72px) 24px;scroll-behavior:smooth}.thread-inner{width:min(900px,100%);margin:0 auto}.dayline{display:flex;align-items:center;gap:14px;color:#68717d;font-size:10px;text-transform:uppercase;letter-spacing:.12em;margin:0 0 22px}.dayline:before,.dayline:after{content:"";height:1px;background:var(--line);flex:1}.message{--person:#5B8CFF;display:grid;grid-template-columns:38px minmax(0,1fr);gap:12px;margin:0 0 20px;animation:arrive .22s ease both}.message-avatar{width:38px;height:38px;font-size:14px}.message-head{display:flex;align-items:baseline;gap:8px;margin:1px 0 4px}.message-name{font-size:13px;font-weight:750;color:var(--person)}.message-role{font-size:9px;line-height:1;padding:4px 6px;border:1px solid color-mix(in srgb,var(--person) 48%,var(--line));border-radius:999px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}.message-time{font-size:10px;color:#69717d}.message-text{font-size:15px;line-height:1.55;color:#dce1e7;white-space:pre-wrap;overflow-wrap:anywhere}.message.human .message-text{background:color-mix(in srgb,var(--person) 12%,var(--surface));border:1px solid color-mix(in srgb,var(--person) 34%,var(--line));border-radius:4px 13px 13px 13px;padding:11px 13px}.system{display:flex;justify-content:center;margin:10px 0 18px}.system span{font-size:11px;color:#7e8793;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:6px 11px}.summary{--person:#34C77B;background:rgba(52,199,123,.09);border:1px solid rgba(52,199,123,.3);border-radius:14px;padding:14px;margin-bottom:20px}.summary .message-text{color:#dff7e7}.composer{border-top:1px solid var(--line);padding:14px clamp(18px,5vw,72px) 18px;background:rgba(14,16,20,.95);backdrop-filter:blur(12px)}.composer-inner{width:min(900px,100%);margin:0 auto}.composer-label{display:block;color:#747d88;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin:0 0 7px 3px}.composer-row{display:flex;align-items:flex-end;gap:9px}.composer textarea{flex:1;min-height:46px;max-height:50vh;resize:vertical;border:1px solid var(--line);border-radius:13px;padding:12px 14px;background:var(--surface);color:var(--text);font:14px/1.4 inherit;outline:none}.composer textarea:focus{border-color:#5B8CFF;box-shadow:0 0 0 3px rgba(91,140,255,.12)}.send{width:46px;height:46px;border:0;border-radius:13px;background:var(--blue);color:#0b0f16;font-size:20px;font-weight:800;cursor:pointer}.send:disabled,.composer textarea:disabled{opacity:.45;cursor:not-allowed}.person-remove,.person-readmit{margin-left:auto;flex:0 0 auto;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:7px;cursor:pointer;font:inherit}.person-remove{width:24px;height:24px;font-size:15px;line-height:1;padding:0}.person-remove:hover{background:#3b2022;border-color:#5a292d;color:#ff8e87}.person-remove:disabled,.person-readmit:disabled{opacity:.45;cursor:not-allowed}.person-readmit{font-size:10px;font-weight:700;padding:4px 7px}.person-readmit:hover{background:var(--surface2);color:var(--text)}.person.removed{opacity:.6;--person:#68717d}.rail-label.removed-label{margin-top:22px}.banner{position:fixed;top:0;left:0;right:0;z-index:60;display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:14px;padding:10px 16px;background:#5a2a10;color:#ffd9b8;border-bottom:1px solid #8a4a1e;font-size:13px;font-weight:600;box-shadow:0 8px 30px rgba(0,0,0,.4)}.banner button{border:1px solid #ffb877;background:#ffb877;color:#2a1608;border-radius:8px;padding:6px 12px;font:700 12px inherit;cursor:pointer}.banner[hidden]{display:none}.toast{position:fixed;left:50%;bottom:90px;transform:translate(-50%,8px);padding:10px 14px;border-radius:9px;background:#f2f4f7;color:#171a1f;font-size:12px;opacity:0;pointer-events:none;transition:.18s;box-shadow:0 12px 40px rgba(0,0,0,.35)}.toast.show{opacity:1;transform:translate(-50%,0)}@keyframes arrive{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}@media(max-width:720px){.workspace{grid-template-columns:1fr}.rail{display:none}.top{padding:0 12px}.button span{display:none}.button{width:40px;padding:0;justify-content:center}.thread{padding:20px 14px}.composer{padding:12px 14px 14px}.title h1{font-size:15px}}
 .atts{display:flex;flex-wrap:wrap;gap:10px;margin-top:9px}.att-img{display:block;max-width:320px;line-height:0}.att-img img{max-width:320px;max-height:280px;border-radius:10px;border:1px solid var(--line);display:block}.att-doc{display:inline-flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px 11px;color:var(--text);text-decoration:none;font-size:13px;max-width:100%}.att-doc:hover{border-color:#3c4450;background:var(--surface2)}.att-doc svg{width:18px;height:18px;fill:var(--muted);flex:0 0 auto}.att-doc span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.att-doc em{color:var(--muted);font-style:normal;font-size:11px;flex:0 0 auto}
 .pending{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 9px 3px}.chip{display:inline-flex;align-items:center;gap:6px;background:var(--surface2);border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:12px;color:var(--text);max-width:240px}.chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chip em{color:var(--muted);font-style:normal;flex:0 0 auto}.chip button{border:0;background:none;color:var(--muted);cursor:pointer;font-size:15px;line-height:1;padding:0;flex:0 0 auto}.chip button:hover{color:#ff8e87}.attach-btn{width:46px;height:46px;flex:0 0 auto;border:1px solid var(--line);border-radius:13px;background:var(--surface);color:var(--muted);cursor:pointer;display:grid;place-items:center;transition:.15s}.attach-btn:hover{background:var(--surface2);color:var(--text)}.attach-btn svg{width:20px;height:20px;fill:currentColor}.attach-btn:disabled{opacity:.45;cursor:not-allowed}body.dragging .composer{outline:2px dashed var(--blue);outline-offset:-6px;border-radius:10px}
-</style></head><body><div class="app"><header class="top"><div class="title"><h1>${escapeHtml(room.title)}</h1><div class="meta"><span class="status-dot"></span><span id="status">${escapeHtml(room.status)}</span><span>·</span><span>${escapeHtml(room.code)}</span><span>·</span><span id="clock"></span><span>·</span><span id="updated" title="Time of the last successful update from the server"></span></div></div><div class="actions"><button class="button mode" id="mode" title="Agents only respond when named"><span class="mode-light"></span><span>Only when addressed</span></button><button class="button" id="export">${ICONS.download}<span>Export</span></button><button class="button" id="copy">${ICONS.copy}<span>Copy invite</span></button><button class="button close-room" id="closeRoom" title="Close this room for everyone" ${room.status === "closed" ? "disabled" : ""}>${ICONS.close}<span>Close room</span></button><button class="button leave" id="leave" title="Leave room">${ICONS.hangup}</button></div></header><main class="workspace"><aside class="rail"><div class="rail-label">Objective</div><div class="objective">${escapeHtml(room.objective)}</div><div class="rail-label">In this room · <span id="count">${room.participants.length}</span></div><div class="people" id="people"></div><div class="rail-label removed-label" id="removedLabel" hidden>Removed</div><div class="people" id="removed"></div></aside><section class="conversation"><div class="thread" id="thread"><div class="thread-inner"><div class="dayline">Live transcript</div><div id="messages"></div></div></div><form class="composer" id="composer"><div class="composer-inner"><label class="composer-label" for="message">Message as ${escapeHtml(room.viewer_name || "User")}</label><div class="pending" id="pending" hidden></div><div class="composer-row"><input type="file" id="file" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/markdown,.png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md" multiple hidden><button type="button" class="attach-btn" id="attach" title="Attach image or document (or paste / drag one in)" aria-label="Attach a file" ${room.status === "closed" ? "disabled" : ""}>${ICONS.clip}</button><textarea id="message" rows="1" maxlength="20000" placeholder="Add to the conversation…" ${room.status === "closed" ? "disabled" : ""}></textarea><button class="send" id="send" type="submit" aria-label="Send" ${room.status === "closed" ? "disabled" : ""}>↑</button></div></div></form></section></main></div><div class="banner" id="banner" hidden role="alert"><span id="bannerText"></span><button id="bannerAction" type="button"></button></div><div class="toast" id="toast"></div>
+.button.needs .badge{min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:#68717d;color:#0b0f16;font-size:11px;font-weight:800;display:grid;place-items:center}.button.needs.hot{background:#3a2d12;border-color:#8a6a1e;color:#ffd27a}.button.needs.hot .badge{background:#F2B134;color:#1a1200}.needs-panel{position:fixed;top:70px;right:0;bottom:0;width:min(440px,100vw);background:var(--rail);border-left:1px solid var(--line);display:grid;grid-template-rows:auto auto minmax(0,1fr);z-index:40;box-shadow:-12px 0 40px rgba(0,0,0,.35)}.needs-panel[hidden]{display:none}.needs-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line)}.needs-head h2{margin:0;font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#ffd27a}.needs-close{width:32px;height:32px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;font-size:16px}.needs-tools{display:flex;align-items:center;gap:8px;padding:10px 16px;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}.needs-tools label{display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:var(--text)}.needs-tools select{height:30px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text);font:12px inherit;padding:0 8px}.needs-tools .chime-test{height:30px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text);padding:0 10px;cursor:pointer;font:12px inherit}.needs-list{overflow:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px}.ask{--person:#F2B134;background:var(--surface);border:1px solid color-mix(in srgb,var(--person) 40%,var(--line));border-left:3px solid var(--person);border-radius:12px;padding:12px 13px;display:grid;gap:8px}.ask-head{display:flex;align-items:baseline;gap:8px;font-size:12px}.ask-name{font-weight:750;color:var(--person)}.ask-tag{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 6px;white-space:nowrap}.ask-time{color:#69717d;font-size:10px;margin-left:auto}.ask-text{font-size:14px;line-height:1.5;color:#dce1e7;white-space:pre-wrap;overflow-wrap:anywhere}.ask textarea{width:100%;min-height:42px;max-height:140px;resize:vertical;border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:var(--bg);color:var(--text);font:13px/1.4 inherit;outline:none}.ask textarea:focus{border-color:#F2B134;box-shadow:0 0 0 3px rgba(242,177,52,.14)}.ask-actions{display:flex;gap:8px;justify-content:flex-end}.ask-actions button{height:34px;border-radius:9px;padding:0 12px;font:600 12px inherit;cursor:pointer;border:1px solid var(--line);background:var(--surface2);color:var(--text)}.ask-actions .ask-send{background:#F2B134;border-color:#F2B134;color:#1a1200}.ask-actions button:disabled{opacity:.45;cursor:not-allowed}.needs-empty{color:var(--muted);font-size:13px;padding:24px 8px;text-align:center}.message.ask .message-text{background:rgba(242,177,52,.08);border:1px solid rgba(242,177,52,.35);border-radius:4px 13px 13px 13px;padding:11px 13px}.message.ask .message-role{color:#ffd27a;border-color:rgba(242,177,52,.5)}
+</style></head><body><div class="app"><header class="top"><div class="title"><h1>${escapeHtml(room.title)}</h1><div class="meta"><span class="status-dot"></span><span id="status">${escapeHtml(room.status)}</span><span>·</span><span>${escapeHtml(room.code)}</span><span>·</span><span id="clock"></span><span>·</span><span id="updated" title="Time of the last successful update from the server"></span></div></div><div class="actions"><button class="button mode" id="mode" title="Agents only respond when named"><span class="mode-light"></span><span>Only when addressed</span></button><button class="button needs" id="needs" title="Questions and approvals agents need from you" aria-expanded="false">${ICONS.bell}<span>Needs you</span><span class="badge" id="needsCount">0</span></button><button class="button" id="export">${ICONS.download}<span>Export</span></button><button class="button" id="copy">${ICONS.copy}<span>Copy invite</span></button><button class="button close-room" id="closeRoom" title="Close this room for everyone" ${room.status === "closed" ? "disabled" : ""}>${ICONS.close}<span>Close room</span></button><button class="button leave" id="leave" title="Leave room">${ICONS.hangup}</button></div></header><main class="workspace"><aside class="rail"><div class="rail-label">Objective</div><div class="objective">${escapeHtml(room.objective)}</div><div class="rail-label">In this room · <span id="count">${room.participants.length}</span></div><div class="people" id="people"></div><div class="rail-label removed-label" id="removedLabel" hidden>Removed</div><div class="people" id="removed"></div></aside><section class="conversation"><div class="thread" id="thread"><div class="thread-inner"><div class="dayline">Live transcript</div><div id="messages"></div></div></div><form class="composer" id="composer"><div class="composer-inner"><label class="composer-label" for="message">Message as ${escapeHtml(room.viewer_name || "User")}</label><div class="pending" id="pending" hidden></div><div class="composer-row"><input type="file" id="file" accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/markdown,.png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md" multiple hidden><button type="button" class="attach-btn" id="attach" title="Attach image or document (or paste / drag one in)" aria-label="Attach a file" ${room.status === "closed" ? "disabled" : ""}>${ICONS.clip}</button><textarea id="message" rows="1" maxlength="20000" placeholder="Add to the conversation…" ${room.status === "closed" ? "disabled" : ""}></textarea><button class="send" id="send" type="submit" aria-label="Send" ${room.status === "closed" ? "disabled" : ""}>↑</button></div></div></form></section></main></div><aside class="needs-panel" id="needsPanel" hidden aria-label="Needs you"><div class="needs-head"><h2>Needs you</h2><button type="button" class="needs-close" id="needsClose" aria-label="Close panel">×</button></div><div class="needs-tools"><label><input type="checkbox" id="chimeOn"> Chime</label><select id="chimeSound" aria-label="Chime sound"><option value="ding">Ding</option><option value="chord">Chord</option><option value="knock">Knock</option><option value="pulse">Pulse</option></select><button type="button" class="chime-test" id="chimeTest" title="Play the chime">Test</button></div><div class="needs-list" id="needsList"></div></aside><div class="banner" id="banner" hidden role="alert"><span id="bannerText"></span><button id="bannerAction" type="button"></button></div><div class="toast" id="toast"></div>
 <script>const ROOM=${initial};const code=${code};let cursor=0;let addressedOnly=Boolean(ROOM.addressed_only);const colors=['#5B8CFF','#FF6B5E','#34C77B','#F2B134','#A970FF','#20B8CC','#F05DAA','#78C442','#F28A3E','#6E79FF'];const el=id=>document.getElementById(id);const esc=s=>{const d=document.createElement('div');d.textContent=s;return d.innerHTML};const colorFor=s=>ROOM.participants.find(p=>p.name===s)?.color||colors[[...s].reduce((a,c)=>a+c.charCodeAt(0),0)%colors.length];const timeOf=s=>new Date(s).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});const participantFor=name=>ROOM.participants.find(p=>p.name===name)||{name,role:name===ROOM.viewer_name?'human':'agent',color:colorFor(name)};
 const isOpen=()=>el('status').textContent!=='closed';
 const docIcon='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6H6Zm7 1.5L18.5 9H13V3.5Z"/></svg>';
@@ -862,11 +956,11 @@ function hideBanner(){el('banner').hidden=true}
 function expired(){showBanner('Your sign-in session has expired. New messages are not being received.','Sign in again',()=>location.reload())}
 async function jsonOf(response){if(response.type==='opaqueredirect'||response.status===401){expired();const e=new Error('Session expired — sign in again');e.expired=true;throw e}const ct=response.headers.get('content-type')||'';if(!ct.includes('json'))throw new Error('HTTP '+response.status+' from the proxy');return response.json()}
 function markUpdated(){el('updated').textContent='updated '+new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}
-function addMessage(m,animate=true){cursor=Math.max(cursor,m.id);const item=document.createElement('article');if(!animate)item.style.animation='none';if(m.kind==='system'){item.className='system';item.innerHTML=\`<span>\${esc(m.content)}</span>\`}else{const p=participantFor(m.sender);item.className='message '+m.kind;item.style.setProperty('--person',p.color||colorFor(m.sender));item.innerHTML=\`<div class="message-avatar">\${esc(m.sender.slice(0,1).toUpperCase())}</div><div><div class="message-head"><span class="message-name">\${esc(m.sender)}</span><span class="message-role">\${m.kind==='human'?'Human':m.kind==='summary'?'Decision':p.role||'Agent'}</span><span class="message-time">\${timeOf(m.created_at)}</span></div><div class="message-text">\${esc(m.content)}</div>\${attHtml(m)}</div>\`}el('messages').appendChild(item);el('thread').scrollTop=el('thread').scrollHeight}
+function addMessage(m,animate=true){cursor=Math.max(cursor,m.id);const item=document.createElement('article');if(!animate)item.style.animation='none';if(m.kind==='system'){item.className='system';item.innerHTML=\`<span>\${esc(m.content)}</span>\`}else{const p=participantFor(m.sender);item.className='message '+m.kind;item.style.setProperty('--person',p.color||colorFor(m.sender));item.innerHTML=\`<div class="message-avatar">\${esc(m.sender.slice(0,1).toUpperCase())}</div><div><div class="message-head"><span class="message-name">\${esc(m.sender)}</span><span class="message-role">\${m.kind==='human'?'Human':m.kind==='summary'?'Decision':m.kind==='ask'?'Needs you':p.role||'Agent'}</span><span class="message-time">\${timeOf(m.created_at)}</span></div><div class="message-text">\${esc(m.content)}</div>\${attHtml(m)}</div>\`}el('messages').appendChild(item);el('thread').scrollTop=el('thread').scrollHeight}
 function renderMode(enabled){addressedOnly=Boolean(enabled);el('mode').classList.toggle('active',addressedOnly);el('mode').setAttribute('aria-pressed',String(addressedOnly));el('message').placeholder=addressedOnly?'Mention an agent by name to request a response…':'Add to the conversation…'}
-function hydrate(){renderMode(addressedOnly);renderPeople(ROOM.participants,ROOM.messages.filter(m=>m.kind==='agent'||m.kind==='human').at(-1)?.sender);renderRemoved(ROOM.removed);ROOM.messages.forEach(m=>addMessage(m,false));markUpdated();el('clock').textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});setInterval(()=>el('clock').textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),30000)}
+function hydrate(){renderMode(addressedOnly);renderPeople(ROOM.participants,ROOM.messages.filter(m=>m.kind==='agent'||m.kind==='human').at(-1)?.sender);renderRemoved(ROOM.removed);ROOM.messages.forEach(m=>addMessage(m,false));renderAsks(ROOM.asks||[],false);if(asks.length)setNeeds(true);markUpdated();el('clock').textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});setInterval(()=>el('clock').textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),30000)}
 let failures=0;
-async function poll(){let closed=false;let delay=350;try{const response=await F(\`/api/rooms/\${code}/messages?after=\${cursor}&wait=25\`);const data=await jsonOf(response);if(!response.ok)throw new Error(data.error||'HTTP '+response.status);failures=0;hideBanner();markUpdated();el('status').textContent=data.status;const active=data.messages.filter(m=>m.kind==='agent'||m.kind==='human').at(-1)?.sender;renderMode(data.addressed_only);renderPeople(data.participants||[],active);renderRemoved(data.removed||ROOM.removed);data.messages.forEach(m=>addMessage(m));closed=data.status==='closed';if(closed){el('message').disabled=true;el('send').disabled=true;el('mode').disabled=true;el('closeRoom').disabled=true;el('attach').disabled=true;renderPeople(data.participants||[],active);renderRemoved(data.removed||ROOM.removed)}}catch(error){if(error.expired)return;failures+=1;delay=Math.min(15000,1000*failures);showBanner('Connection lost ('+error.message+'). Retrying… New messages are not being received.','Reload',()=>location.reload())}if(!closed)setTimeout(poll,delay)}
+async function poll(){let closed=false;let delay=350;try{const response=await F(\`/api/rooms/\${code}/messages?after=\${cursor}&wait=25\`);const data=await jsonOf(response);if(!response.ok)throw new Error(data.error||'HTTP '+response.status);failures=0;hideBanner();markUpdated();el('status').textContent=data.status;const active=data.messages.filter(m=>m.kind==='agent'||m.kind==='human').at(-1)?.sender;renderMode(data.addressed_only);renderPeople(data.participants||[],active);renderRemoved(data.removed||ROOM.removed);data.messages.forEach(m=>addMessage(m));if(Array.isArray(data.asks))renderAsks(data.asks,true);closed=data.status==='closed';if(closed){el('message').disabled=true;el('send').disabled=true;el('mode').disabled=true;el('closeRoom').disabled=true;el('attach').disabled=true;renderPeople(data.participants||[],active);renderRemoved(data.removed||ROOM.removed)}}catch(error){if(error.expired)return;failures+=1;delay=Math.min(15000,1000*failures);showBanner('Connection lost ('+error.message+'). Retrying… New messages are not being received.','Reload',()=>location.reload())}if(!closed)setTimeout(poll,delay)}
 function toast(message){el('toast').textContent=message;el('toast').classList.add('show');setTimeout(()=>el('toast').classList.remove('show'),1800)}let pending=[];const ATT_TYPES={png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',pdf:'application/pdf',txt:'text/plain',md:'text/markdown'};const ATT_ALLOWED=['image/png','image/jpeg','image/gif','image/webp','application/pdf','text/plain','text/markdown'];const ATT_MAX=10*1048576;
 function renderPending(){const box=el('pending');box.hidden=!pending.length;box.innerHTML=pending.map((p,i)=>'<span class="chip">'+(isImg(p.content_type)?'🖼':'📄')+'<span>'+esc(p.filename)+'</span><em>'+fmtBytes(p.size)+'</em><button type="button" data-i="'+i+'" aria-label="Remove attachment">×</button></span>').join('')}
 function typeOf(file){const ct=(file.type||'').toLowerCase();if(ct&&ATT_ALLOWED.includes(ct))return ct;return ATT_TYPES[(file.name||'').split('.').pop().toLowerCase()]||ct}
@@ -877,7 +971,7 @@ el('composer').onsubmit=e=>{e.preventDefault();sendViewerMessage()};el('message'
 el('attach').onclick=()=>el('file').click();el('file').onchange=e=>{handleFiles([...e.target.files]);e.target.value=''};el('pending').onclick=e=>{const b=e.target.closest('button[data-i]');if(!b)return;pending.splice(Number(b.dataset.i),1);renderPending()};el('message').addEventListener('paste',e=>{const items=[...((e.clipboardData&&e.clipboardData.items)||[])];const files=items.filter(i=>i.kind==='file').map(i=>i.getAsFile()).filter(Boolean);if(files.length){e.preventDefault();handleFiles(files)}});document.addEventListener('dragover',e=>{e.preventDefault();if(isOpen())document.body.classList.add('dragging')});document.addEventListener('dragleave',e=>{if(e.relatedTarget===null)document.body.classList.remove('dragging')});document.addEventListener('drop',e=>{e.preventDefault();document.body.classList.remove('dragging');if(!isOpen())return;const files=[...((e.dataTransfer&&e.dataTransfer.files)||[])];if(files.length)handleFiles(files)});
 function dlFile(name,text,type){const b=new Blob([text],{type});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1500)}
 async function fetchRoom(){const r=await fetch('/api/rooms/'+code);if(!r.ok)throw new Error('Could not load transcript');return r.json()}
-function roleOf(m){return m.kind==='human'?'Human':m.kind==='summary'?'Decision':'Agent'}
+function roleOf(m){return m.kind==='human'?'Human':m.kind==='summary'?'Decision':m.kind==='ask'?'Ask':'Agent'}
 function mdOf(d){const L=['# '+d.title,'','- **Room:** '+d.code];if(d.objective)L.push('- **Objective:** '+d.objective);L.push('- **Status:** '+d.status,'- **Exported:** '+new Date().toLocaleString(),'','---','');for(const m of d.messages){if(m.kind==='system'){L.push('_'+m.content+'_','');continue}L.push('### '+m.sender+' · '+roleOf(m)+' · '+new Date(m.created_at).toLocaleString(),'',m.content,'');(m.attachments||[]).forEach(x=>{const u=location.origin+attUrl(x.id);L.push(isImg(x.content_type)?'!['+x.filename+']('+u+')':'['+x.filename+' ('+fmtBytes(x.size)+')]('+u+')','')})}if(d.summary)L.push('---','','**Summary:** '+d.summary,'');return L.join('\\n')}
 function htmlOf(d){const e2=s=>{const x=document.createElement('div');x.textContent=s;return x.innerHTML};const rows=d.messages.map(m=>{const t=new Date(m.created_at).toLocaleString();if(m.kind==='system')return '<p class="sys">'+e2(m.content)+'</p>';const atts=(m.attachments||[]).map(x=>{const u=location.origin+attUrl(x.id);return isImg(x.content_type)?'<div><img src="'+u+'" style="max-width:320px;max-height:280px;border-radius:8px"></div>':'<div><a href="'+u+'">'+e2(x.filename)+' ('+fmtBytes(x.size)+')</a></div>'}).join('');return '<div class="msg"><div class="h"><b>'+e2(m.sender)+'</b> <span>'+roleOf(m)+'</span> <time>'+t+'</time></div><div class="c">'+e2(m.content)+'</div>'+atts+'</div>'}).join('');return '<!doctype html><html><head><meta charset="utf-8"><title>'+e2(d.title)+'</title><style>body{font:14px/1.5 -apple-system,Segoe UI,sans-serif;color:#111;max-width:760px;margin:32px auto;padding:0 20px}h1{margin:0 0 4px}.meta{color:#555;font-size:12px;margin-bottom:16px}hr{border:0;border-top:1px solid #ddd;margin:16px 0}.msg{margin:0 0 13px}.h{font-size:12px;color:#333}.h span{color:#888;text-transform:uppercase;font-size:10px;margin-left:4px}.h time{color:#999;margin-left:6px}.c{white-space:pre-wrap;margin-top:2px}.sys{color:#888;font-style:italic;text-align:center;font-size:12px;margin:8px 0}@media print{body{margin:0}}</style></head><body><h1>'+e2(d.title)+'</h1><div class="meta">Room '+e2(d.code)+' · '+e2(d.status)+' · Exported '+new Date().toLocaleString()+(d.objective?' · '+e2(d.objective):'')+'</div><hr>'+rows+(d.summary?'<hr><p><b>Summary:</b> '+e2(d.summary)+'</p>':'')+'</body></html>'}
 function printHtml(html){const f=document.createElement('iframe');f.setAttribute('aria-hidden','true');f.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';f.srcdoc=html;f.onload=()=>{try{f.contentWindow.focus();f.contentWindow.print()}catch(e){}setTimeout(()=>f.remove(),1000)};document.body.appendChild(f)}
@@ -887,6 +981,24 @@ document.addEventListener('click',()=>{const m=document.getElementById('exportMe
 el('closeRoom').onclick=async()=>{if(!confirm('Close this room for everyone? Agents will stop and the transcript is frozen.'))return;const who=String(ROOM.viewer_name||'User');const summary=prompt('Optional closing summary:','Closed by '+who+' from the viewer');if(summary===null)return;el('closeRoom').disabled=true;try{const response=await F('/api/rooms/'+encodeURIComponent(code)+'/close',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:who,summary:summary.trim()||'Closed from the viewer'})});const data=await jsonOf(response);if(!response.ok)throw new Error(data.error||'Could not close room');toast('Room closed')}catch(error){toast(error.message);el('closeRoom').disabled=false}};
 el('people').onclick=async e=>{const b=e.target.closest('.person-remove');if(!b)return;const name=b.dataset.name;if(!confirm('Remove '+name+' from this room? It will be blocked from rejoining until you re-admit it.'))return;b.disabled=true;try{const response=await F('/api/rooms/'+encodeURIComponent(code)+'/viewer/remove',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name})});const data=await jsonOf(response);if(!response.ok)throw new Error(data.error||'Could not remove '+name);renderPeople(data.participants||[]);renderRemoved(data.removed||[]);toast(name+' removed')}catch(error){toast(error.message);b.disabled=false}};
 el('removed').onclick=async e=>{const b=e.target.closest('.person-readmit');if(!b)return;const name=b.dataset.name;b.disabled=true;try{const response=await F('/api/rooms/'+encodeURIComponent(code)+'/viewer/readmit',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name})});const data=await jsonOf(response);if(!response.ok)throw new Error(data.error||'Could not re-admit '+name);renderRemoved(data.removed||[]);toast(name+' may rejoin')}catch(error){toast(error.message);b.disabled=false}};
+// ---- Needs-you tray + chime. State is server-side (room.asks); only the chime prefs
+// and the panel's open/closed state live in this browser. One chime per NEW ask id,
+// never on load/reload, never on Reply or Done.
+let asks=[];let needsOpen=false;let seenAskMax=null;const BASE_TITLE=document.title;
+const SOUNDS={ding:[[880,0,.35],[1320,.02,.5]],chord:[[523,0,.5],[659,0,.5],[784,0,.6]],knock:[[180,0,.08],[180,.14,.08],[180,.28,.1]],pulse:[[660,0,.12],[660,.2,.12],[660,.4,.25]]};
+let chime={on:true,sound:'ding'};try{const saved=JSON.parse(localStorage.getItem('agentroom.chime')||'null');if(saved&&typeof saved==='object'){chime.on=saved.on!==false;if(SOUNDS[saved.sound])chime.sound=saved.sound}}catch(e){}
+function saveChime(){try{localStorage.setItem('agentroom.chime',JSON.stringify(chime))}catch(e){}}
+let audioCtx=null;function ensureAudio(){try{if(!audioCtx)audioCtx=new (window.AudioContext||window.webkitAudioContext)();if(audioCtx.state==='suspended')audioCtx.resume().catch(()=>{})}catch(e){audioCtx=null}return audioCtx}
+function playChime(name){const c=ensureAudio();if(!c||c.state!=='running')return false;const notes=SOUNDS[name]||SOUNDS.ding;const t0=c.currentTime;notes.forEach(([f,at,dur])=>{const o=c.createOscillator();const g=c.createGain();o.type=name==='knock'?'triangle':'sine';o.frequency.value=f;g.gain.setValueAtTime(0.0001,t0+at);g.gain.exponentialRampToValueAtTime(0.25,t0+at+0.01);g.gain.exponentialRampToValueAtTime(0.0001,t0+at+dur);o.connect(g).connect(c.destination);o.start(t0+at);o.stop(t0+at+dur+0.05)});return true}
+let askKey='';
+function renderAsks(list,live){asks=Array.isArray(list)?list:[];const n=asks.length;const maxId=asks.reduce((m,a)=>Math.max(m,Number(a.id)||0),0);const fresh=live&&seenAskMax!==null&&asks.some(a=>Number(a.id)>seenAskMax);seenAskMax=Math.max(seenAskMax||0,maxId);el('needsCount').textContent=n;el('needs').classList.toggle('hot',n>0);document.title=(n?'('+n+') ':'')+BASE_TITLE;const key=asks.map(a=>a.id).join(',')+'|'+isOpen();if(key===askKey){if(fresh){if(!needsOpen)setNeeds(true);if(chime.on)playChime(chime.sound)}return}askKey=key;const drafts={};const active=document.activeElement;const focusId=active&&active.matches&&active.matches('textarea[data-id]')?active.dataset.id:null;const caret=focusId?[active.selectionStart,active.selectionEnd]:null;el('needsList').querySelectorAll('textarea[data-id]').forEach(t=>{if(t.value)drafts[t.dataset.id]=t.value});el('needsList').innerHTML=n?asks.map(a=>{const p=participantFor(a.sender);return '<div class="ask" data-id="'+a.id+'" style="--person:'+(p.color||colorFor(a.sender))+'"><div class="ask-head"><span class="ask-name">'+esc(a.sender)+'</span><span class="ask-tag">'+(a.implicit?'mentioned you':'ask #'+a.id)+'</span><span class="ask-time">'+timeOf(a.created_at)+'</span></div><div class="ask-text">'+esc(a.content)+'</div><textarea data-id="'+a.id+'" rows="1" placeholder="Reply to '+esc(a.sender)+'…"'+(isOpen()?'':' disabled')+'></textarea><div class="ask-actions"><button type="button" class="ask-done" data-id="'+a.id+'">Done</button><button type="button" class="ask-send" data-id="'+a.id+'"'+(isOpen()?'':' disabled')+'>Send</button></div></div>'}).join(''):'<div class="needs-empty">Nothing needs you right now.</div>';el('needsList').querySelectorAll('textarea[data-id]').forEach(t=>{if(drafts[t.dataset.id])t.value=drafts[t.dataset.id]});if(focusId){const again=el('needsList').querySelector('textarea[data-id="'+focusId+'"]');if(again){again.focus();try{again.setSelectionRange(caret[0],caret[1])}catch(e){}}}if(fresh){if(!needsOpen)setNeeds(true);if(chime.on)playChime(chime.sound)}}
+function setNeeds(open){needsOpen=open;el('needsPanel').hidden=!open;el('needs').setAttribute('aria-expanded',String(open))}
+el('needs').onclick=()=>{ensureAudio();setNeeds(!needsOpen)};el('needsClose').onclick=()=>setNeeds(false);
+el('chimeOn').checked=chime.on;el('chimeSound').value=chime.sound;
+el('chimeOn').onchange=e=>{chime.on=e.target.checked;saveChime();ensureAudio();toast(chime.on?'Chime on':'Chime off')};el('chimeSound').onchange=e=>{chime.sound=e.target.value;saveChime();playChime(chime.sound)};el('chimeTest').onclick=()=>{if(!playChime(chime.sound))toast('Audio is blocked in this tab')};
+async function askAction(id,action,answer){const r=await F('/api/rooms/'+encodeURIComponent(code)+'/asks/'+encodeURIComponent(id)+'/'+action,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(answer?{answer}:{})});const d=await jsonOf(r);if(!r.ok)throw new Error(d.error||'Could not '+action);renderAsks(d.asks||[],false);if(d.participants)renderPeople(d.participants,ROOM.viewer_name);return d}
+el('needsList').onclick=async e=>{const b=e.target.closest('button[data-id]');if(!b)return;const id=b.dataset.id;const ta=b.closest('.ask').querySelector('textarea');if(b.classList.contains('ask-send')){const answer=ta.value.trim();if(!answer){ta.focus();return}b.disabled=true;try{await askAction(id,'answer',answer);toast('Answer sent')}catch(err){toast(err.message);b.disabled=false}}else{b.disabled=true;try{await askAction(id,'dismiss');toast('Done')}catch(err){toast(err.message);b.disabled=false}}};
+el('needsList').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&e.target.matches('textarea[data-id]')){e.preventDefault();e.target.closest('.ask').querySelector('.ask-send').click()}};
 hydrate();poll();</script></body></html>`;
 }
 
@@ -1012,7 +1124,8 @@ function messagesText(messages) {
   if (!messages.length) return "No new messages. Continue listening unless a stop condition has been met.";
   return messages.map((m) => {
     const refs = (m.attachments || []).map((a) => `\n  ↳ ${attachmentRefText(a)}`).join("");
-    return `#${m.id} [${m.kind}] ${m.sender}: ${m.content}${refs}`;
+    const answered = m.answers_ask != null ? `[answer to your ask #${m.answers_ask}] ` : "";
+    return `${answered}#${m.id} [${m.kind}] ${m.sender}: ${m.content}${refs}`;
   }).join("\n\n");
 }
 
@@ -1022,7 +1135,7 @@ function roomToMarkdown(room) {
   lines.push(`- **Status:** ${room.status}`, "", "---", "");
   for (const message of room.messages || []) {
     if (message.kind === "system") { lines.push(`_${message.content}_`, ""); continue; }
-    const role = message.kind === "human" ? "Human" : message.kind === "summary" ? "Decision" : "Agent";
+    const role = message.kind === "human" ? "Human" : message.kind === "summary" ? "Decision" : message.kind === "ask" ? "Ask" : "Agent";
     lines.push(`### ${message.sender} · ${role} · ${message.created_at}`, "", message.content, "");
     for (const attachment of message.attachments || []) {
       const url = `${PUBLIC_URL}/api/rooms/${room.code}/attachments/${attachment.id}`;
@@ -1035,6 +1148,8 @@ function roomToMarkdown(room) {
 
 function responseGuidance(result) {
   if (result.status === "closed") return "Meeting closed. Do not reply or poll again.";
+  const answered = (result.messages || []).filter((m) => m.answers_ask != null).map((m) => `#${m.answers_ask}`);
+  if (answered.length) return `The human answered your ask ${answered.join(", ")} (see the message marked [answer to your ask]). Act on the answer, then keep listening.`;
   if (!result.addressed_only) return "Response mode: normal.";
   if (result.should_respond) return "Response mode: ONLY WHEN ADDRESSED. Your name was addressed; respond if useful, then wait again.";
   return "Response mode: ONLY WHEN ADDRESSED. Your name was not addressed. Do not send any acknowledgement or commentary; stay silent and listen again.";
@@ -1048,7 +1163,7 @@ function required(args, key) {
 async function main() {
   const command = process.argv[2];
   const args = argsOf(process.argv.slice(3));
-  if (!command) { console.log("Usage: agent_room.mjs <start|stop|create|invite|join|send|fetch|listen|status|leave|transcript|export|close|open>"); return; }
+  if (!command) { console.log("Usage: agent_room.mjs <start|stop|create|invite|join|send|ask|fetch|listen|status|leave|transcript|export|close|open>"); return; }
   if (command === "serve") { startServer(); return; }
   if (args["user-name"]) {
     const userName = String(args["user-name"]).trim().slice(0, 80);
@@ -1103,6 +1218,18 @@ async function main() {
       const reply = await api("GET", `/api/rooms/${roomCode}/messages?name=${encodeURIComponent(args.name)}&wait=${wait}`, undefined, (wait + 5) * 1000);
       console.log(`\nRoom ${reply.room} is ${reply.status}; ${reply.active_agents} agent(s) active.\n${responseGuidance(reply)}\n${messagesText(reply.messages)}`);
     }
+    return;
+  }
+  if (command === "ask") {
+    // Something the human must answer: a question, an approval, a blocker. Lands in the
+    // viewer's Needs-you tray; the answer comes back through listen as a message marked
+    // "[answer to your ask #N]". The text is --message or everything after the room code.
+    const name = required(args, "name");
+    const positional = args._.slice(1).join(" ").trim();
+    const message = args.message && args.message !== true ? String(args.message) : positional;
+    if (!message) throw new Error("Usage: ask <room-code> --name <you> \"What do you need from the human?\" (or --message)");
+    const result = await api("POST", `/api/rooms/${roomCode}/ask`, { name, content: message });
+    console.log(`Asked #${result.ask.id} as ${result.message.sender}. ${result.viewer_name || "The human"} will see it in the Needs-you tray. Keep listening: the answer arrives as a message marked [answer to your ask #${result.ask.id}]. Do not re-ask in the stream.`);
     return;
   }
   if (command === "fetch") {
@@ -1181,7 +1308,7 @@ async function main() {
     spawn(opener, openerArgs, { detached: true, stdio: "ignore" }).unref();
     console.log(room.viewer_url); return;
   }
-  console.log("Usage: agent_room.mjs <start|stop|create|invite|join|send|fetch|listen|status|leave|transcript|export|close|open>");
+  console.log("Usage: agent_room.mjs <start|stop|create|invite|join|send|ask|fetch|listen|status|leave|transcript|export|close|open>");
 }
 
 main().catch((error) => { console.error(`Error: ${error.message}`); process.exit(1); });
