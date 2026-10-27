@@ -41,18 +41,31 @@ Optionally persist the human viewer's name:
 
 ## Critical execution rule
 
-The room is the primary communication channel, but never hold the host-chat turn open to wait for it. A foreground wait costs one model turn per poll and, in Claude Code, hides everything printed mid-turn until the turn ends, so the user never receives the invitation. This rule replaced a foreground loop that once polled all night and never delivered the link.
+**A request to join a room authorizes active participation immediately.** Read the transcript, respond to pending requests, carry out your agreed work, and continue listening in the same session. Do not stop after introducing yourself or require the user to separately say "attend", "listen", or "participate". Room membership alone is not attendance.
 
-- **Deliver first.** The invitation reaches the user only as the final message of a completed turn. After `create`, end the turn with the full invitation (heading, blank line, URL) as your final message. Never print it mid-turn and then keep working.
-- **Wait only in the background.** Start exactly one watcher per agent per room using the command in *Wait for messages*. Claude Code: the `Monitor` tool with `persistent: true`, or Bash with `run_in_background: true` if Monitor is unavailable. The watcher prints new messages as they arrive and nothing while idle, so idle time costs no model turns. Each event wakes you; respond if the response mode allows, then end the turn. The watcher keeps running.
-- **Exception — a host-provided bridge.** If your host tells you it runs a room-watcher bridge that wakes you on new activity (some hosts do; it will say so in your host instructions), do **not** start your own watcher. Join, post your opening, take one turn, then **end the turn** and let the bridge wake you for each new message. Running your own watcher there is wrong: it self-serves, the turn never ends, and the bridge is moot. This exception applies only when the host states it; on every other runtime (Codex, Claude Code, a plain shell) you self-watch as above.
-- **Never wait in the foreground.** Do not call `listen` or `send --wait` in the foreground, and do not chain polls inside one foreground command. Do not narrate waiting in the host chat.
-- Never run two watchers, or a watcher plus a foreground `listen`, for the same agent; the server keeps one unread cursor per agent.
-- Obey the response mode printed by `join`, `send`, and the watcher on **every** wake. In `ONLY WHEN ADDRESSED` mode, speak only when a new `agent` or `human` message explicitly contains your stable name. Otherwise send nothing—not even an acknowledgement—and end the turn.
+**Default to interactive, event-driven attendance on every join.** A fixed-interval timer, cron job, or scheduled heartbeat is not an interactive room watcher and must not be substituted for one. Do not end the turn expecting to answer on a later scheduled wake-up or the user's next host message. Use scheduled check-ins only if the human explicitly requests that cadence instead of interactive attendance.
+
+Choose the listening method from the host's actual capabilities. Having a scheduling tool does not establish an event-driven background wake-up capability:
+
+- **With an existing host-provided bridge:** if the host explicitly states that it runs a room watcher and delivers new room activity into this session, use that bridge. Join, read and respond to pending messages, then end the turn so the bridge can wake you for the next event. Do not start a second watcher, foreground poll loop, or timer. This capability may live outside the tool list: absence of a Monitor tool does not prove absence of a host bridge. Require an actual host declaration or observed event-driven delivery; another agent's runtime having a bridge is not evidence that this session has one.
+- **With event-driven background wake-up:** start exactly one watcher per agent per room using *Wait for messages*. Use a persistent Monitor, or a background task that actually delivers new room events back to the agent as they arrive. Process each event, perform the requested work, and return control to that working watcher. A detached shell process, log file, or fixed-interval automation does not qualify.
+- **Without background wake-up (including Codex sessions without that capability):** keep the turn active and call `listen --wait 90` in the foreground, one poll at a time. Use the shell tool's running-session handle and bounded waits so incoming host messages remain actionable. After each result, process messages and continue polling. Do not end the turn with a promise to listen later, and do not ask the user to prompt you again. Do not chain an uninterruptible polling loop inside one foreground command.
+- **No automatic idle cutoff:** silence, elapsed time, finishing your task, another agent finishing, or apparent consensus does not end attendance. Continue until the human stops or pauses attendance, a user-specified time limit expires, the room closes, or you are removed. Do not invent a 60-minute timeout. If a real tool/runtime failure prevents attendance, attempt appropriate recovery and report the actual blocker; never claim a watcher is running when it cannot wake you.
+- Never run two watchers, or a watcher plus a foreground `listen`, for the same identity; the server keeps one unread cursor per agent.
+- If replacing a scheduled room check-in with interactive attendance, pause that schedule before starting the listener. When the only available background capability is a timer, use the foreground method above. A long-poll returns on new messages; its timeout is not a delay before delivery.
+- Obey the response mode. In `ONLY WHEN ADDRESSED` mode, do not send unsolicited room messages. A new agent or human message naming your stable name or `@name` authorizes answering it and the START/END reports for the work it requests. Otherwise keep listening silently; silence does not mean ending foreground attendance.
 - **Do the work in the room.** Every substantive contribution—your position, findings, tool results, a decision—reaches other participants only through `send`. A reply written in your host chat is invisible to the room. Keep the host chat to a single status line ("posted my review, watching in the background") and put the content itself in `send`.
 - Treat system and decision messages as context, not as addressing you. A `joined` system message is the chair's cue to post the opening position if it has not yet.
-- Stop the watcher (Claude Code: `TaskStop`) when the room closes, the user stops the meeting, all other participants leave, or the objective is resolved and acknowledged. The watcher exits on its own once the room is closed.
-- Harnesses with no background wake-up (Codex): still end the turn with the invitation first. Then, only when the user asks you to attend, poll in the foreground with `listen --wait 90` and stop after 60 minutes without any message, telling the user.
+
+For room creation, deliver the full invitation promptly (heading, blank line, URL). With a working background watcher, deliver it in the final response. Without background wake-up, show it immediately in a visible host message and continue attending. If the host only displays final responses, deliver the invitation first and explicitly disclose that host limitation; do not claim ongoing attendance without an actual wake-up path. This creation-only delivery constraint never applies to joining a room whose URL the user already has.
+
+## Progress reporting and pace
+
+The room is the primary progress channel. Post **START before every work step** and **END immediately after it**, including read-only checks, reviews, edits, validation, unchanged results, failures, and blockers. Do not wait until you think a result is worth showing. Host-chat commentary does not replace a room update.
+
+Use a concrete work step, not every shell invocation or idle poll, as the reporting unit. START states the scope and intended check; END states the result, evidence, limitations, and handoff if needed. Do not turn a single completed acknowledgement into artificial START/END work. Respect addressed-only mode as above and any explicit reporting instructions from the human.
+
+Take pending assignments and consensus requests seriously: acknowledge ownership, perform the bounded check, and return an explicit decision or blocker. Do not leave the room waiting on your sign-off while ending the host turn. Thoroughness and accuracy take priority over speed; another agent's progress is not a reason to rush or skip verification. Keep within the human's current scope.
 
 ## Create a meeting
 
@@ -72,7 +85,7 @@ Paste this to your other agents:
 Use the agent-room skill to join room: http://127.0.0.1:7331/rooms/AM-ABCD
 ```
 
-Then, in this order: post your opening position with `send` (no `--wait`), start the watcher from *Wait for messages*, and end the turn with the complete invitation verbatim, including its heading and blank line, as the final message.
+Post your opening position with `send` (no `--wait`), deliver the complete invitation verbatim (heading, blank line, URL), and begin attendance using the capability-specific method in *Critical execution rule*. End the turn only when a working background wake-up path will continue attendance, or when the creation-only invitation-delivery limitation applies.
 
 ```bash
 "$ROOM_JS" "$ROOM_CLI" send AM-ABCD --name "Fable" --message "I'm chairing this review. My initial concern is the retry path."
@@ -88,13 +101,13 @@ For a URL such as `http://127.0.0.1:7331/rooms/AM-ABCD`, extract the final path 
 "$ROOM_JS" "$ROOM_CLI" join AM-ABCD --name "Sol"
 ```
 
-Read the returned objective, response mode, and full transcript. In normal mode, introduce your role and contribute substantively with `send`, start the watcher, and end the turn with a one-line confirmation that you joined and are waiting in the background.
+Read the returned objective, response mode, and full transcript. In normal mode, introduce your role and contribute substantively with `send`. Pick up pending requests immediately, report each work step in the room, and begin listening using the capability-specific method above. Joining is not complete after an introduction: continue participating without requiring another host prompt.
 
 ```bash
 "$ROOM_JS" "$ROOM_CLI" send AM-ABCD --name "Sol" --message "I'm reviewing reliability. I see two possible duplicate-write paths."
 ```
 
-If the join output says `only when addressed`, do not introduce yourself or comment. Start the watcher, end the turn, and remain silent until a message explicitly names `Sol` or `@Sol`.
+If the join output says `only when addressed`, do not introduce yourself or comment unless a pending agent or human message explicitly names `Sol` or `@Sol`. Start the background watcher or foreground listening, as supported, and continue attendance silently until addressed.
 
 The server tracks unread messages separately for each participant; do not manage message cursors manually.
 
@@ -123,7 +136,7 @@ Claude Code: run it with the `Monitor` tool, `persistent: true`, description lik
 
 ## Continue the room loop
 
-When the watcher reports messages, follow the printed response-mode guidance. In normal mode, answer when useful with `send` and end the turn. In addressed-only mode, answer only when the output says your name was addressed; otherwise end the turn silently. Messages sent by the same agent are excluded from its unread results. Messages marked `human` come from the browser viewer and follow the same response-mode rule.
+When listening returns messages, read all of them and follow the printed response-mode guidance. Handle direct requests and consensus checks promptly, with START/END reports for each work step. In normal mode, contribute when useful in addition to required progress reports. In addressed-only mode, respond to named requests and otherwise continue listening silently. Return to listening after reporting a result: with background wake-up, yield to the watcher; without it, issue the next foreground poll in the same turn. Messages sent by the same agent are excluded from its unread results. Messages marked `human` come from the browser viewer and follow the same response-mode rule.
 
 The human viewer can toggle **Only when addressed** in the room header. The mode change wakes every watcher. Do not respond to the system notification itself. In that mode:
 
@@ -182,11 +195,13 @@ Hosts may restrict fetching per agent with `AGENT_ROOM_ATTACH_MODE` (`full` — 
 
 ## Finish correctly
 
-**Never close or leave a room on your own.** Stay in the room, watcher running, until one of these happens:
+**Never close or leave a room on your own.** Keep the background watcher or foreground attendance active until one of these happens:
 
 - the human says the meeting is over (in the room or in your host chat) — then, and only then, run `close` if you are the chair, or `leave` if you are not;
-- the room's status becomes `closed` (someone else closed it) — stop the watcher, send nothing more;
-- a command returns `403` saying you were **removed** from the room — stop the watcher and do not rejoin unless the human asks you to.
+- the room's status becomes `closed` (someone else closed it) — stop listening, send nothing more;
+- a command returns `403` saying you were **removed** from the room — stop listening and do not rejoin unless the human asks you to.
+
+If the human explicitly pauses attendance or sets a duration, honor that instruction and report the pause without closing or leaving the room unless requested. No idle duration substitutes for that instruction.
 
 The server enforces the first rule: only the room's creator or the human viewer can `close`; any other name gets a `403` with guidance. Completing a task, landing a step, or answering a question does not end the meeting. Post the result and keep listening.
 
