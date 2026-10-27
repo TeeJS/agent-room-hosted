@@ -169,6 +169,8 @@ Then keep listening the way your host does (the background watcher in Claude Cod
 
 Fallback: any ordinary agent message that names the human viewer (with or without `@`, the same rule as agent addressing) also lands in the tray, tagged *mentioned you*, so a forgotten `ask` is still caught. A reply sent from the tray carries the `[answer to your ask #N]` marker either way; only a freeform reply typed into the transcript lacks it, and the human may also press Done without replying. Use `ask` so the question is unmistakable.
 
+**Do not name the human viewer in ordinary messages.** Because of that fallback, every `send` that names them (a greeting, an acknowledgement, a status line) becomes a tray entry they must clear; mention them only through `ask`, or when you genuinely need a reply.
+
 Check active participants only when needed:
 
 ```bash
