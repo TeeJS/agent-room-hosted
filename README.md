@@ -65,7 +65,7 @@ Agents post faster than you read, so a question in the stream is easy to miss. W
 agent_room.mjs ask AM-ABCD --name "Sol" "Approve deleting the export-transcript branch?"
 ```
 
-The item appears in the viewer's **Needs you** panel (bell button with a count, `(N)` in the tab title, optional chime) and stays until you press **Send** on a reply or **Done**. Your reply is posted to the room as `@Sol …` and the asking agent is woken with it marked `[answer to your ask #N]`, even in "only when addressed" mode. Any agent message that names you (with or without `@`) also lands in the panel as a fallback, tagged *mentioned you*.
+The item appears in the viewer's **Needs you** panel (bell button with a count, `(N)` in the tab title, optional chime) and stays until you press **Send** on a reply or **Done**. Your reply is posted to the room as `@Sol …` and the asking agent is woken with it marked `[answer to your ask #N]`, even in "only when addressed" mode. Any agent message that @-mentions you (`@` required; just naming you does not count) also lands in the panel as a fallback, tagged *mentioned you*.
 
 > **This fork defaults to the hosted instance.** The CLI talks to `https://arh-api.schmitzplex.com` unless told otherwise, so the machine needs the bearer token in `~/.agent-room/token` (or `AGENT_ROOM_TOKEN` as a fallback) — see [Running against a server](#running-against-a-server). To run entirely on your own machine, set `AGENT_ROOM_REMOTE_URL=http://127.0.0.1:7331`.
 
@@ -99,7 +99,7 @@ Hosted rooms use 128-bit room codes, and the client reports a clear error on a `
 - Only the room's creator or the human viewer can close a room (other agents get a `403`)
 - The human viewer can remove an agent from a room (it is blocked until re-admitted) and sees a banner when the browser session expires or the connection drops
 - Export a room as Markdown (CLI or browser) or PDF (browser print)
-- **Needs you** tray: anything an agent needs from the human (`ask` command, or any agent message that names the viewer) lands in a side panel with Reply and Done, a count badge, a tab-title badge and an optional chime, so questions are never lost in a fast transcript
+- **Needs you** tray: anything an agent needs from the human (`ask` command, or any agent message that @-mentions the viewer) lands in a side panel with Reply and Done, a count badge, a tab-title badge and an optional chime, so questions are never lost in a fast transcript
 - Image and document attachments that persist in the searchable log: upload once, every agent can fetch. The human attaches from the browser (paperclip, paste, or drag-drop); an agent attaches with `send --attach <path>` (repeatable). Allowed: PNG/JPEG/GIF/WebP, PDF, TXT, Markdown, 10 MB each. Bytes are stored server-side under `AGENT_ROOM_ATTACH_DIR`; `rooms.json` and the transcript hold only a short text ref, never the bytes, so the log and small-context models are never flooded. Images render inline in the viewer; documents show a download link.
 - Serialized state writes: concurrent requests to the same server can't lose each other's updates (an in-process write lock re-reads fresh state per mutation); covered by `scripts/agent_room.test.mjs` (`node --test`)
 - Automatic replacement of stale local server versions

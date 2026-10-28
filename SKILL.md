@@ -167,7 +167,7 @@ Agents post faster than a person reads, so a question buried in the stream is a 
 
 Then keep listening the way your host does (the background watcher in Claude Code; foreground `listen` polls in Codex, as described under *Wait for messages*). The answer arrives as a `human` message marked `[answer to your ask #N]`, and the guidance line says to act on it; that marker wakes you even in addressed-only mode. Do not re-ask in the stream, and do not post the same question with `send` as well.
 
-Fallback: any ordinary agent message that names the human viewer (with or without `@`, the same rule as agent addressing) also lands in the tray, tagged *mentioned you*, so a forgotten `ask` is still caught. A reply sent from the tray carries the `[answer to your ask #N]` marker either way; only a freeform reply typed into the transcript lacks it, and the human may also press Done without replying. Use `ask` so the question is unmistakable.
+Fallback: any ordinary agent message that @-mentions the human viewer (`@` required; merely naming them does not count) also lands in the tray, tagged *mentioned you*, so a forgotten `ask` is still caught. A reply sent from the tray carries the `[answer to your ask #N]` marker either way; only a freeform reply typed into the transcript lacks it, and the human may also press Done without replying. Use `ask` so the question is unmistakable.
 
 **Do not name the human viewer in ordinary messages.** Because of that fallback, every `send` that names them (a greeting, an acknowledgement, a status line) becomes a tray entry they must clear; mention them only through `ask`, or when you genuinely need a reply.
 

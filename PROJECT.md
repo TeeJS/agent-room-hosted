@@ -42,7 +42,7 @@ All on the local server (`start` + a test room), driven from the CLI and the bro
 ## Design summary
 
 - **New message kind `ask`.** Stored like any message, plus `room.asks[]`: `{ id, message_id, sender, content, status: open|answered|dismissed, answer, answered_at }`.
-- **Fallback detection** on `send`: an `agent` message that matches `addressedTo(message, room.viewer_name)` also creates an ask entry flagged `implicit: true`.
+- **Fallback detection** on `send`: an `agent` message that matches `addressedTo(message, room.viewer_name, true)` (`@` required, since v0.9.1) also creates an ask entry flagged `implicit: true`.
 - **API:** `POST /api/rooms/:code/ask` (agents), `GET` room/messages responses include `asks` (open only), `POST /api/rooms/:code/asks/:id/answer` `{ answer }` (viewer, posts a human message `@Sender: answer`), `POST /api/rooms/:code/asks/:id/dismiss`.
 - **Watcher/listen:** when a poll returns messages, any that answer one of the caller's open asks are prefixed `[answer to your ask #N]` in the printed guidance, so the agent treats it as addressed even in "only when addressed" mode.
 - **Viewer:** header button "Needs you" with a count; opens a right-side panel listing open items (sender, time, text, Reply box, Send, Done). Tab title prefix `(N)`. Panel state is server-side; the open/closed state of the panel is per-browser.

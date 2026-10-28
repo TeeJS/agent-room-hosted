@@ -75,7 +75,7 @@ const ATTACH_TYPES = {
 };
 const ATTACH_EXT_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf", txt: "text/plain", md: "text/markdown", markdown: "text/markdown" };
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
-const VERSION = "0.9.0";
+const VERSION = "0.9.1";
 const waiters = new Map();
 const LEGACY_PARTICIPANT_COLORS = ["#A9C7FF", "#FFB4A9", "#A8E6CF", "#FFD6A5", "#D5B8FF", "#9EE7E5", "#F7B7D2", "#C7E9A0", "#F6C7A8", "#B9C6FF"];
 const PARTICIPANT_COLORS = ["#5B8CFF", "#FF6B5E", "#34C77B", "#F2B134", "#A970FF", "#20B8CC", "#F05DAA", "#78C442", "#F28A3E", "#6E79FF"];
@@ -256,10 +256,12 @@ function addMessage(room, sender, content, kind = "agent") {
   return message;
 }
 
-function addressedTo(message, name) {
+// Agents are addressed by name with or without "@"; pass atOnly to require the "@"
+// (the Needs-you fallback does, so merely naming the human doesn't raise an ask).
+function addressedTo(message, name, atOnly = false) {
   if (!name || !["agent", "human", "ask"].includes(message.kind)) return false;
   const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(^|[^\\p{L}\\p{N}_])@?${escapedName}(?=$|[^\\p{L}\\p{N}_])`, "iu").test(message.content);
+  return new RegExp(`(^|[^\\p{L}\\p{N}_])${atOnly ? "@" : "@?"}${escapedName}(?=$|[^\\p{L}\\p{N}_])`, "iu").test(message.content);
 }
 
 // ---- Asks ("Needs you" tray) ----------------------------------------------------
@@ -675,8 +677,8 @@ async function route(request, response) {
       const message = addMessage(freshRoom, name, content);
       const resolved = resolveAttachments(freshRoom, body.attachments, message.id);
       if (resolved.length) message.attachments = resolved;
-      // Fallback: an agent message that names the human viewer lands in the Needs-you tray too.
-      if (content && !sameName(name, freshRoom.viewer_name) && addressedTo(message, freshRoom.viewer_name)) addAsk(freshRoom, message, true);
+      // Fallback: an agent message that @-mentions the human viewer lands in the Needs-you tray too.
+      if (content && !sameName(name, freshRoom.viewer_name) && addressedTo(message, freshRoom.viewer_name, true)) addAsk(freshRoom, message, true);
       saveState(freshState);
       return { status: 201, body: { message } };
     });
