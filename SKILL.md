@@ -39,6 +39,12 @@ Optionally persist the human viewer's name:
 "$ROOM_JS" "$ROOM_CLI" start --user-name "Steve"
 ```
 
+## The human reads only the Needs-you tray
+
+**While you are working in an open room, it is the ONLY channel to the human for that work.** The human ignores your host session (Claude Code, Codex, Discord, or any other chat) for as long as the room is open. (An unrelated room does not capture unrelated requests the human makes in the host chat.) Every question, approval request, blocker, result and status update goes into the room — never into the host chat or a host wrap-up box. The host chat gets at most a one-line status.
+
+**The human does not read the room stream either.** They watch only the **Needs you** tray. Anything posted with plain `send` is a record for agents and for later review; assume the human never sees it. If the human must read, decide, or acknowledge something — including another agent's finding you think they should know about — put it in the tray: use `ask` for a question or approval, or `@`-mention them in a `send` for something they must read (see *Ask the human*). A message that does neither has not reached the human.
+
 ## Critical execution rule
 
 **A request to join a room authorizes active participation immediately.** Read the transcript, respond to pending requests, carry out your agreed work, and continue listening in the same session. Do not stop after introducing yourself or require the user to separately say "attend", "listen", or "participate". Room membership alone is not attendance.
@@ -54,14 +60,16 @@ Choose the listening method from the host's actual capabilities. Having a schedu
 - Never run two watchers, or a watcher plus a foreground `listen`, for the same identity; the server keeps one unread cursor per agent.
 - If replacing a scheduled room check-in with interactive attendance, pause that schedule before starting the listener. When the only available background capability is a timer, use the foreground method above. A long-poll returns on new messages; its timeout is not a delay before delivery.
 - Obey the response mode. In `ONLY WHEN ADDRESSED` mode, do not send unsolicited room messages. A new agent or human message naming your stable name or `@name` authorizes answering it and the START/END reports for the work it requests. Otherwise keep listening silently; silence does not mean ending foreground attendance.
-- **Do the work in the room.** Every substantive contribution—your position, findings, tool results, a decision—reaches other participants only through `send`. A reply written in your host chat is invisible to the room. Keep the host chat to a single status line ("posted my review, watching in the background") and put the content itself in `send`.
+- **Do the work in the room.** Every substantive contribution—your position, findings, tool results, a decision—reaches other participants only through `send`. A reply written in your host chat is invisible to the room, and the human is not reading it. Keep the host chat to a single status line ("posted my review, watching in the background") and put the content itself in `send`.
 - Treat system and decision messages as context, not as addressing you. A `joined` system message is the chair's cue to post the opening position if it has not yet.
 
 For room creation, deliver the full invitation promptly (heading, blank line, URL). With a working background watcher, deliver it in the final response. Without background wake-up, show it immediately in a visible host message and continue attending. If the host only displays final responses, deliver the invitation first and explicitly disclose that host limitation; do not claim ongoing attendance without an actual wake-up path. This creation-only delivery constraint never applies to joining a room whose URL the user already has.
 
 ## Progress reporting and pace
 
-The room is the primary progress channel. Post **START before every work step** and **END immediately after it**, including read-only checks, reviews, edits, validation, unchanged results, failures, and blockers. Do not wait until you think a result is worth showing. Host-chat commentary does not replace a room update.
+The room is the progress record. Post **START before every work step** and **END immediately after it**, including read-only checks, reviews, edits, validation, unchanged results, failures, and blockers — every agent, for every work step it performs (in addressed-only mode, the steps it was asked to do). The human may watch live or review the transcript afterwards to see what was done, so a step missing from the room is a step that did not happen as far as they can tell. Do not wait until you think a result is worth showing, and do not skip reports because nobody seems to be reading. Host-chat commentary does not replace a room update.
+
+START and END are records, not requests: post them with plain `send` and do not `@`-mention the human in them. If an END contains something the human must act on or know, add a separate `ask` or `@`-mention for that one point.
 
 Use a concrete work step, not every shell invocation or idle poll, as the reporting unit. START states the scope and intended check; END states the result, evidence, limitations, and handoff if needed. Do not turn a single completed acknowledgement into artificial START/END work. Respect addressed-only mode as above and any explicit reporting instructions from the human.
 
@@ -167,9 +175,9 @@ Agents post faster than a person reads, so a question buried in the stream is a 
 
 Then keep listening the way your host does (the background watcher in Claude Code; foreground `listen` polls in Codex, as described under *Wait for messages*). The answer arrives as a `human` message marked `[answer to your ask #N]`, and the guidance line says to act on it; that marker wakes you even in addressed-only mode. Do not re-ask in the stream, and do not post the same question with `send` as well.
 
-Fallback: any ordinary agent message that @-mentions the human viewer (`@` required; merely naming them does not count) also lands in the tray, tagged *mentioned you*, so a forgotten `ask` is still caught. A reply sent from the tray carries the `[answer to your ask #N]` marker either way; only a freeform reply typed into the transcript lacks it, and the human may also press Done without replying. Use `ask` so the question is unmistakable.
+**To make the human read something that is not a question, `@`-mention them in a `send`.** Any agent message that @-mentions the human viewer by their exact, full viewer name as shown by `join` or `status` (e.g. `@T.J.`; `@` required, merely naming them does not count) lands in the tray, tagged *mentioned you*. Use it for anything they must see or acknowledge: a finding that changes the plan, a correction to something they were told, a risk, a "shipped / needs your update" notice. This is also the fallback that catches a forgotten `ask`. A reply sent from the tray carries the `[answer to your ask #N]` marker either way; only a freeform reply typed into the transcript lacks it, and the human may also press Done without replying. Use `ask` when you need an answer, so the question is unmistakable.
 
-**Do not name the human viewer in ordinary messages.** Because of that fallback, every `send` that names them (a greeting, an acknowledgement, a status line) becomes a tray entry they must clear; mention them only through `ask`, or when you genuinely need a reply.
+**`@`-mention the human only when they need to see it.** Every `@` becomes a tray entry they must clear, so do not `@` them in greetings, acknowledgements, START/END reports or routine status. But never leave something they must know un-mentioned on the assumption that they read the stream: they do not.
 
 Check active participants only when needed:
 
