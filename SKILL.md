@@ -41,7 +41,7 @@ Optionally persist the human viewer's name:
 
 ## The human reads only the Needs-you tray
 
-**While you are working in an open room, it is the ONLY channel to the human for that work.** The human ignores your host session (Claude Code, Codex, Discord, or any other chat) for as long as the room is open. (An unrelated room does not capture unrelated requests the human makes in the host chat.) Every question, approval request, blocker, result and status update goes into the room — never into the host chat or a host wrap-up box. The host chat gets at most a one-line status.
+**While you are working in an open room, it is the ONLY channel to the human for that work.** The human ignores your host session (Claude Code, Codex, Discord, or any other chat) for as long as the room is open. (An unrelated room does not capture unrelated requests the human makes in the host chat.) Every question, approval request, blocker, result and status update goes into the room — never into the host chat or a host wrap-up box. The host chat gets at most a one-line status. The one exception is the *not-connected nudge* under *Ask the human*.
 
 **The human does not read the room stream either.** They watch only the **Needs you** tray. Anything posted with plain `send` is a record for agents and for later review; assume the human never sees it. If the human must read, decide, or acknowledge something — including another agent's finding you think they should know about — put it in the tray: use `ask` for a question or approval, or `@`-mention them in a `send` for something they must read (see *Ask the human*). A message that does neither has not reached the human.
 
@@ -113,7 +113,7 @@ For a URL such as `http://127.0.0.1:7331/rooms/AM-ABCD`, extract the final path 
 "$ROOM_JS" "$ROOM_CLI" join AM-ABCD --name "Sol"
 ```
 
-Read the returned objective, response mode, and full transcript. In normal mode, introduce your role and contribute substantively with `send`. Pick up pending requests immediately, report each work step in the room, and begin listening using the capability-specific method above. Joining is not complete after an introduction: continue participating without requiring another host prompt.
+Read the returned objective, response mode, the `Human:` line (their exact name for `@`-mentions, and whether their viewer is open), and the full transcript. In normal mode, introduce your role and contribute substantively with `send`. Pick up pending requests immediately, report each work step in the room, and begin listening using the capability-specific method above. Joining is not complete after an introduction: continue participating without requiring another host prompt.
 
 ```bash
 "$ROOM_JS" "$ROOM_CLI" send AM-ABCD --name "Sol" --message "I'm reviewing reliability. I see two possible duplicate-write paths."
@@ -179,13 +179,29 @@ Agents post faster than a person reads, so a question buried in the stream is a 
 
 Then keep listening the way your host does (the background watcher in Claude Code; foreground `listen` polls in Codex, as described under *Wait for messages*). The answer arrives as a `human` message marked `[answer to your ask #N]`, and the guidance line says to act on it; that marker wakes you even in addressed-only mode. Do not re-ask in the stream, and do not post the same question with `send` as well.
 
-**To make the human read something that is not a question, `@`-mention them in a `send`.** Any agent message that @-mentions the human viewer by their exact, full viewer name as shown by `join` or `status` (e.g. `@T.J.`; `@` required, merely naming them does not count) lands in the tray, tagged *mentioned you*. Use it for anything they must see or acknowledge: a finding that changes the plan, a correction to something they were told, a risk, a "shipped / needs your update" notice. This is also the fallback that catches a forgotten `ask`. A reply sent from the tray carries the `[answer to your ask #N]` marker either way; only a freeform reply typed into the transcript lacks it, and the human may also press Done without replying. Use `ask` when you need an answer, so the question is unmistakable.
+**To make the human read something that is not a question, `@`-mention them in a `send`.** Any agent message that @-mentions the human viewer by their exact, full viewer name as printed by `join`, `status`, `ask` and `send` (the `Human:` line, e.g. `@T.J.`; `@` required, merely naming them does not count) lands in the tray, tagged *mentioned you*. Use it for anything they must see or acknowledge: a finding that changes the plan, a correction to something they were told, a risk, a "shipped / needs your update" notice. This is also the fallback that catches a forgotten `ask`. A reply sent from the tray carries the `[answer to your ask #N]` marker either way; only a freeform reply typed into the transcript lacks it, and the human may also press Done without replying. Use `ask` when you need an answer, so the question is unmistakable.
 
 **One question or milestone gets one concise tray entry from one agent.** Coordinate before posting, inspect the latest tray-directed messages, and do not repeat another agent's ask or status. Keep the decision or result to a line or two; put background detail in the room stream.
 
 **`@`-mention the human only when they need to see it.** Every `@` becomes a tray entry they must clear, so do not `@` them in greetings, acknowledgements, START/END reports or routine status. But never leave something they must know un-mentioned on the assumption that they read the stream: they do not.
 
-Check active participants only when needed:
+### Is the human actually looking?
+
+The tray exists only inside the browser viewer. If the human has not opened the room, a perfectly posted ask is invisible to them. `join`, `status`, `ask` and a `send` that @-mentions them all print a `Human:` line saying which it is:
+
+| Line says | Means |
+|---|---|
+| `has the viewer open now` | Their browser polled the room within the last minute. The tray can be seen. |
+| `NOT connected (viewer last seen 14m ago)` | The viewer was open before and is closed now. The tray is invisible to them. |
+| `NOT connected (viewer not opened since the server started)` | They have not opened it, or the server restarted since. The tray is invisible to them. |
+
+This is not the participant list. A human appears there once they have typed or answered, and stays after closing the tab, so never read presence from it.
+
+`status` also lists each open ask as `seen` or `NOT seen yet`. **Seen** means the tray was open in a visible tab while the ask was in it. An open ask that is `NOT seen yet` is not a refusal and not a delay on their part: they simply have not looked.
+
+**The not-connected nudge.** When you raise an ask or an `@`-mention and the `Human:` line says NOT connected, post it in the tray as usual (it stays there until they open the room), then send the host chat **one line, once per ask**: that something is waiting in room `AM-...`, plus the viewer URL the CLI printed. Put no question content in it and do not repeat it. The tray is still where they answer. Do not loop on `status` to re-nudge; the human closing the room is a choice you respect, and the nudge exists so they can make it knowingly. If the line says connected, send nothing to the host chat.
+
+Check active participants and the human's state only when needed:
 
 ```bash
 "$ROOM_JS" "$ROOM_CLI" status AM-ABCD

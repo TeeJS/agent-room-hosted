@@ -75,8 +75,26 @@ const ATTACH_TYPES = {
 };
 const ATTACH_EXT_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf", txt: "text/plain", md: "text/markdown", markdown: "text/markdown" };
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
-const VERSION = "0.10.1";
+const VERSION = "0.11.0";
 const waiters = new Map();
+// ---- Viewer presence -------------------------------------------------------------
+// The human reads only the browser viewer's Needs-you tray, so agents need to know whether
+// it is open. The viewer's long-poll sends ?viewer=1; each poll stamps the room here.
+// Kept in memory on purpose: a stamp lands every few seconds and must not rewrite
+// rooms.json. A restart forgets it, and the open viewer re-stamps within one poll.
+// "Connected" = stamped within VIEWER_ACTIVE_MS (a poll lasts <=25s, so 60s tolerates one slow cycle).
+const VIEWER_ACTIVE_MS = Math.max(1, Number(process.env.AGENT_ROOM_VIEWER_ACTIVE_MS) || 60000);
+const viewerSeen = new Map();
+const touchViewer = (code) => viewerSeen.set(code, Date.now());
+function viewerPresence(room) {
+  const at = viewerSeen.get(room.code);
+  return {
+    viewer_name: room.viewer_name || "User",
+    viewer_url: `${PUBLIC_URL}/rooms/${room.code}`,
+    viewer_connected: Boolean(at) && Date.now() - at < VIEWER_ACTIVE_MS,
+    viewer_last_seen: at ? new Date(at).toISOString().replace(/\.\d{3}Z$/, "Z") : null,
+  };
+}
 const LEGACY_PARTICIPANT_COLORS = ["#A9C7FF", "#FFB4A9", "#A8E6CF", "#FFD6A5", "#D5B8FF", "#9EE7E5", "#F7B7D2", "#C7E9A0", "#F6C7A8", "#B9C6FF"];
 const PARTICIPANT_COLORS = ["#5B8CFF", "#FF6B5E", "#34C77B", "#F2B134", "#A970FF", "#20B8CC", "#F05DAA", "#78C442", "#F28A3E", "#6E79FF"];
 
@@ -343,7 +361,7 @@ function publicRoom(room) {
   const { next_message_id, ...visible } = room;
   visible.participants = room.participants.map(({ last_read_id, ...participant }) => participant);
   visible.asks = openAsks(room); // the tray only ever needs open items; history stays in the transcript
-  return { ...visible, viewer_url: `${PUBLIC_URL}/rooms/${room.code}`, invitation: invitation(room) };
+  return { ...visible, ...viewerPresence(room), invitation: invitation(room) };
 }
 
 function invitation(room) {
@@ -499,6 +517,8 @@ async function route(request, response) {
       active_agents: room.participants.filter((person) => person.role === "agent").length,
       addressed_only: room.addressed_only,
       participants: room.participants.map(({ last_read_id, ...person }) => person),
+      ...viewerPresence(room),
+      asks: openAsks(room),
       latest_message_id: room.next_message_id - 1,
     }); return;
   }
@@ -522,10 +542,16 @@ async function route(request, response) {
     if (name && !participant) { json(response, 403, { error: `${name} is not an active participant in ${code}` }); return; }
     const after = participant ? Number(participant.last_read_id || 0) : Math.max(0, Number(url.searchParams.get("after") || 0));
     const wait = Math.min(300, Math.max(0, Number(url.searchParams.get("wait") || 0)));
+    // Only the browser viewer sends viewer=1 (and never a name). Stamp on arrival and again
+    // when the wait ends, but not if the connection already dropped: a closed tab must not
+    // extend its own presence by the length of its last long-poll.
+    const fromViewer = url.searchParams.get("viewer") === "1" && !name;
+    if (fromViewer) touchViewer(code);
     const unread = (candidate) => candidate.id > after && (!name || candidate.sender.toLowerCase() !== name.toLowerCase());
     let messages = room.messages.filter(unread);
     if (!messages.length && room.status === "open" && wait) {
       await waitForChange(code, wait);
+      if (fromViewer && response.socket && !response.socket.destroyed) touchViewer(code);
       state = loadState();
       room = state.rooms[code];
       messages = room.messages.filter(unread);
@@ -562,6 +588,7 @@ async function route(request, response) {
       participants: room.participants,
       removed: room.removed || [],
       asks: openAsks(room),
+      ...viewerPresence(room),
       latest_message_id: latestMessageId,
       messages: deliveredMessages,
     }); return;
@@ -678,9 +705,10 @@ async function route(request, response) {
       const resolved = resolveAttachments(freshRoom, body.attachments, message.id);
       if (resolved.length) message.attachments = resolved;
       // Fallback: an agent message that @-mentions the human viewer lands in the Needs-you tray too.
-      if (content && !sameName(name, freshRoom.viewer_name) && addressedTo(message, freshRoom.viewer_name, true)) addAsk(freshRoom, message, true);
+      let implicitAsk = null;
+      if (content && !sameName(name, freshRoom.viewer_name) && addressedTo(message, freshRoom.viewer_name, true)) implicitAsk = addAsk(freshRoom, message, true);
       saveState(freshState);
-      return { status: 201, body: { message } };
+      return { status: 201, body: { message, ...(implicitAsk ? { ask: implicitAsk } : {}), ...viewerPresence(freshRoom) } };
     });
     if (outcome.status === 201) notify(code);
     json(response, outcome.status, outcome.body); return;
@@ -702,9 +730,29 @@ async function route(request, response) {
       const message = addMessage(freshRoom, name, content, "ask");
       const ask = addAsk(freshRoom, message, false);
       saveState(freshState);
-      return { status: 201, body: { message, ask, viewer_name: freshRoom.viewer_name } };
+      return { status: 201, body: { message, ask, ...viewerPresence(freshRoom) } };
     });
     if (outcome.status === 201) notify(code);
+    json(response, outcome.status, outcome.body); return;
+  }
+
+  // The viewer reports which asks it has actually shown (tray open, tab visible). This is
+  // the only way an agent can tell "open and seen" from "open and never looked at". It is
+  // not a message: no id, no wake-up for waiting agents, no change to updated_at.
+  if (parts[3] === "asks" && parts[4] === "seen" && parts.length === 5) {
+    const ids = (Array.isArray(body.ids) ? body.ids : []).map(Number).filter(Number.isFinite);
+    touchViewer(code);
+    const outcome = await withLock(() => {
+      const freshState = loadState();
+      const freshRoom = freshState.rooms[code];
+      if (!freshRoom) return { status: 404, body: { error: `Room ${code} not found` } };
+      let changed = false;
+      for (const ask of freshRoom.asks || []) {
+        if (ask.status === "open" && !ask.seen_at && ids.includes(ask.id)) { ask.seen_at = now(); changed = true; }
+      }
+      if (changed) saveState(freshState);
+      return { status: 200, body: { asks: openAsks(freshRoom) } };
+    });
     json(response, outcome.status, outcome.body); return;
   }
 
@@ -962,7 +1010,7 @@ function addMessage(m,animate=true){cursor=Math.max(cursor,m.id);const item=docu
 function renderMode(enabled){addressedOnly=Boolean(enabled);el('mode').classList.toggle('active',addressedOnly);el('mode').setAttribute('aria-pressed',String(addressedOnly));el('message').placeholder=addressedOnly?'Mention an agent by name to request a response…':'Add to the conversation…'}
 function hydrate(){renderMode(addressedOnly);renderPeople(ROOM.participants,ROOM.messages.filter(m=>m.kind==='agent'||m.kind==='human').at(-1)?.sender);renderRemoved(ROOM.removed);ROOM.messages.forEach(m=>addMessage(m,false));renderAsks(ROOM.asks||[],false);if(asks.length)setNeeds(true);markUpdated();el('clock').textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});setInterval(()=>el('clock').textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),30000)}
 let failures=0;
-async function poll(){let closed=false;let delay=350;try{const response=await F(\`/api/rooms/\${code}/messages?after=\${cursor}&wait=25\`);const data=await jsonOf(response);if(!response.ok)throw new Error(data.error||'HTTP '+response.status);failures=0;hideBanner();markUpdated();el('status').textContent=data.status;const active=data.messages.filter(m=>m.kind==='agent'||m.kind==='human').at(-1)?.sender;renderMode(data.addressed_only);renderPeople(data.participants||[],active);renderRemoved(data.removed||ROOM.removed);data.messages.forEach(m=>addMessage(m));if(Array.isArray(data.asks))renderAsks(data.asks,true);closed=data.status==='closed';if(closed){el('message').disabled=true;el('send').disabled=true;el('mode').disabled=true;el('closeRoom').disabled=true;el('attach').disabled=true;renderPeople(data.participants||[],active);renderRemoved(data.removed||ROOM.removed)}}catch(error){if(error.expired)return;failures+=1;delay=Math.min(15000,1000*failures);showBanner('Connection lost ('+error.message+'). Retrying… New messages are not being received.','Reload',()=>location.reload())}if(!closed)setTimeout(poll,delay)}
+async function poll(){let closed=false;let delay=350;try{const response=await F(\`/api/rooms/\${code}/messages?after=\${cursor}&wait=25&viewer=1\`);const data=await jsonOf(response);if(!response.ok)throw new Error(data.error||'HTTP '+response.status);failures=0;hideBanner();markUpdated();el('status').textContent=data.status;const active=data.messages.filter(m=>m.kind==='agent'||m.kind==='human').at(-1)?.sender;renderMode(data.addressed_only);renderPeople(data.participants||[],active);renderRemoved(data.removed||ROOM.removed);data.messages.forEach(m=>addMessage(m));if(Array.isArray(data.asks))renderAsks(data.asks,true);closed=data.status==='closed';if(closed){el('message').disabled=true;el('send').disabled=true;el('mode').disabled=true;el('closeRoom').disabled=true;el('attach').disabled=true;renderPeople(data.participants||[],active);renderRemoved(data.removed||ROOM.removed)}}catch(error){if(error.expired)return;failures+=1;delay=Math.min(15000,1000*failures);showBanner('Connection lost ('+error.message+'). Retrying… New messages are not being received.','Reload',()=>location.reload())}if(!closed)setTimeout(poll,delay)}
 function toast(message){el('toast').textContent=message;el('toast').classList.add('show');setTimeout(()=>el('toast').classList.remove('show'),1800)}let pending=[];const ATT_TYPES={png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp',pdf:'application/pdf',txt:'text/plain',md:'text/markdown'};const ATT_ALLOWED=['image/png','image/jpeg','image/gif','image/webp','application/pdf','text/plain','text/markdown'];const ATT_MAX=10*1048576;
 function renderPending(){const box=el('pending');box.hidden=!pending.length;box.innerHTML=pending.map((p,i)=>'<span class="chip">'+(isImg(p.content_type)?'🖼':'📄')+'<span>'+esc(p.filename)+'</span><em>'+fmtBytes(p.size)+'</em><button type="button" data-i="'+i+'" aria-label="Remove attachment">×</button></span>').join('')}
 function typeOf(file){const ct=(file.type||'').toLowerCase();if(ct&&ATT_ALLOWED.includes(ct))return ct;return ATT_TYPES[(file.name||'').split('.').pop().toLowerCase()]||ct}
@@ -997,6 +1045,11 @@ function renderAsks(list,live){asks=Array.isArray(list)?list:[];const n=asks.len
 // Docked (default): the tray is its own column right of the chat and pushes it over; floating: it overlays the chat. Docking needs 1140px (240 rail + 400 tray + a 500px minimum for the chat); narrower, it always floats.
 let needsDocked=true;try{needsDocked=localStorage.getItem('agentroom.needsDock')!=='float'}catch(e){}
 function applyDock(){document.body.classList.toggle('needs-docked',needsOpen&&needsDocked);el('needsDock').textContent=needsDocked?'Float':'Dock'}
+// Tell the server which asks this tab has actually put in front of the human: tray open AND tab visible.
+// A closed or hidden tab reports nothing, so an agent can tell "open and seen" from "open, never looked at".
+const reportedSeen=new Set();
+function markSeen(){if(!needsOpen||document.visibilityState!=='visible'||!isOpen())return;asks.forEach(a=>{if(a.seen_at)reportedSeen.add(Number(a.id))});const ids=asks.map(a=>Number(a.id)).filter(i=>!reportedSeen.has(i));if(!ids.length)return;ids.forEach(i=>reportedSeen.add(i));F('/api/rooms/'+encodeURIComponent(code)+'/asks/seen',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ids})}).catch(()=>ids.forEach(i=>reportedSeen.delete(i)))}
+setInterval(markSeen,2000);document.addEventListener('visibilitychange',markSeen);
 function setNeeds(open){needsOpen=open;el('needsPanel').hidden=!open;el('needs').setAttribute('aria-expanded',String(open));applyDock()}
 el('needsDock').onclick=()=>{needsDocked=!needsDocked;try{localStorage.setItem('agentroom.needsDock',needsDocked?'dock':'float')}catch(e){}applyDock()};
 el('needs').onclick=()=>{ensureAudio();setNeeds(!needsOpen)};el('needsClose').onclick=()=>setNeeds(false);
@@ -1126,6 +1179,28 @@ function argsOf(values) {
   return result;
 }
 
+function ago(iso) {
+  const seconds = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+  if (seconds < 90) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  return minutes < 90 ? `${minutes}m ago` : `${Math.round(minutes / 60)}h ago`;
+}
+
+// One sentence on whether the human can see the Needs-you tray right now. "Connected" means
+// their browser viewer polled within the last minute; it is NOT the same as being in the
+// participant list (that only means they have typed once). The viewer stamp lives in server
+// memory, so after a server restart "not opened" can also mean "not since the restart".
+function viewerLine(info) {
+  const name = info.viewer_name || "User";
+  if (info.viewer_connected) return `${name} has the viewer open now (mention as @${name}).`;
+  const when = info.viewer_last_seen ? `viewer last seen ${ago(info.viewer_last_seen)}` : "viewer not opened since the server started";
+  return `${name} is NOT connected (${when}); the Needs-you tray is invisible to them until they open ${info.viewer_url} (mention as @${name}).`;
+}
+
+function asksText(asks) {
+  return (asks || []).map((ask) => `- #${ask.id} from ${ask.sender}${ask.implicit ? " (mention)" : ""}: ${ask.seen_at ? `seen ${ago(ask.seen_at)}` : "NOT seen yet"}`).join("\n");
+}
+
 function messagesText(messages) {
   if (!messages.length) return "No new messages. Continue listening unless a stop condition has been met.";
   return messages.map((m) => {
@@ -1198,7 +1273,7 @@ async function main() {
   if (command === "invite") { console.log((await api("GET", `/api/rooms/${roomCode}`)).invitation); return; }
   if (command === "join") {
     const room = await api("POST", `/api/rooms/${roomCode}/join`, { name: required(args, "name") });
-    console.log(`Joined ${room.code}: ${room.title}\nObjective: ${room.objective}\nStatus: ${room.status} | Response mode: ${room.addressed_only ? "only when addressed" : "normal"} | Viewer: ${room.viewer_url}\n\nTranscript\n\n${messagesText(room.messages)}`); return;
+    console.log(`Joined ${room.code}: ${room.title}\nObjective: ${room.objective}\nStatus: ${room.status} | Response mode: ${room.addressed_only ? "only when addressed" : "normal"} | Viewer URL: ${room.viewer_url}\nHuman: ${viewerLine(room)}\n\nTranscript\n\n${messagesText(room.messages)}`); return;
   }
   if (command === "send") {
     const name = required(args, "name");
@@ -1219,6 +1294,7 @@ async function main() {
     if (!message && !attachments.length) throw new Error("--message or --attach is required");
     const result = await api("POST", `/api/rooms/${roomCode}/messages`, { name, content: message, attachments });
     console.log(`Sent message #${result.message.id} as ${result.message.sender}.`);
+    if (result.ask) console.log(`That message @-mentioned the human, so it is now ask #${result.ask.id} in their Needs-you tray. ${viewerLine(result)}`);
     if (args.wait !== undefined) {
       const wait = Math.min(300, Math.max(0, Number(args.wait || 45)));
       const reply = await api("GET", `/api/rooms/${roomCode}/messages?name=${encodeURIComponent(args.name)}&wait=${wait}`, undefined, (wait + 5) * 1000);
@@ -1235,7 +1311,7 @@ async function main() {
     const message = args.message && args.message !== true ? String(args.message) : positional;
     if (!message) throw new Error("Usage: ask <room-code> --name <you> \"What do you need from the human?\" (or --message)");
     const result = await api("POST", `/api/rooms/${roomCode}/ask`, { name, content: message });
-    console.log(`Asked #${result.ask.id} as ${result.message.sender}. ${result.viewer_name || "The human"} will see it in the Needs-you tray. Keep listening: the answer arrives as a message marked [answer to your ask #${result.ask.id}]. Do not re-ask in the stream.`);
+    console.log(`Asked #${result.ask.id} as ${result.message.sender}. ${viewerLine(result)} Keep listening: the answer arrives as a message marked [answer to your ask #${result.ask.id}]. Do not re-ask in the stream.`);
     return;
   }
   if (command === "fetch") {
@@ -1284,7 +1360,7 @@ async function main() {
   }
   if (command === "status") {
     const result = await api("GET", `/api/rooms/${roomCode}/status`);
-    console.log(`${result.room} is ${result.status}; ${result.active_agents} agent(s) active; response mode: ${result.addressed_only ? "only when addressed" : "normal"}.\n${result.participants.map((person) => `- ${person.name} [${person.role}]`).join("\n") || "No active participants."}`); return;
+    console.log(`${result.room} is ${result.status}; ${result.active_agents} agent(s) active; response mode: ${result.addressed_only ? "only when addressed" : "normal"}.\nHuman: ${viewerLine(result)}\n${result.participants.map((person) => `- ${person.name} [${person.role}]`).join("\n") || "No active participants."}${result.asks && result.asks.length ? `\nOpen asks in the tray:\n${asksText(result.asks)}` : ""}`); return;
   }
   if (command === "leave") {
     const room = await api("POST", `/api/rooms/${roomCode}/leave`, { name: required(args, "name") });
