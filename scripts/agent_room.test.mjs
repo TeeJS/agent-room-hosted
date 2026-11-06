@@ -10,7 +10,7 @@
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -49,6 +49,7 @@ before(async () => {
       AGENT_ROOM_ATTACH_DIR: path.join(home, "attachments"),
       AGENT_ROOM_PORT: String(PORT),
       AGENT_ROOM_BIND_HOST: "127.0.0.1",
+      AGENT_ROOM_VIEWER_ACTIVE_MS: "1500", // lets the presence tests watch "connected" expire in seconds
     },
     stdio: "ignore",
   });
@@ -126,4 +127,130 @@ test("a send concurrent with close is consistent (no partial write)", async () =
   // Whatever landed before the close must be intact JSON (state never half-written).
   assert.ok(Array.isArray(room.messages), "messages array intact");
   assert.ok(room.messages.every((m) => typeof m.id === "number"), "every message well-formed");
+});
+
+// ---- Viewer presence + seen asks ---------------------------------------------------
+// The human reads only the browser viewer's Needs-you tray, so agents must be able to tell
+// whether it is open and whether an ask has actually been shown. These drive the real
+// endpoints and the real CLI; the browser end is covered by driving the actual page.
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const viewerPoll = (code) => api("GET", `/api/rooms/${code}/messages?after=0&wait=0&viewer=1`);
+const status = async (code) => (await api("GET", `/api/rooms/${code}/status`)).json();
+function cli(...args) {
+  return new Promise((resolve) => {
+    execFile(process.execPath, [SCRIPT, ...args], {
+      env: { ...process.env, AGENT_ROOM_HOME: home, AGENT_ROOM_REMOTE_URL: BASE, AGENT_ROOM_PORT: String(PORT), AGENT_ROOM_TOKEN_FILE: path.join(home, "no-token") },
+    }, (error, stdout, stderr) => resolve({ code: error ? error.code : 0, out: stdout + stderr }));
+  });
+}
+
+test("a fresh room reports the viewer's name and that they have not connected", async () => {
+  const room = await (await api("POST", "/api/rooms", { title: "p1", name: "Chair", user_name: "T.J." })).json();
+  assert.equal(room.viewer_name, "T.J.");
+  assert.equal(room.viewer_connected, false);
+  assert.equal(room.viewer_last_seen, null);
+  const s = await status(room.code);
+  assert.equal(s.viewer_name, "T.J.");
+  assert.equal(s.viewer_connected, false);
+});
+
+test("a viewer poll marks the viewer connected, then it expires", async () => {
+  const room = await (await api("POST", "/api/rooms", { title: "p2", name: "Chair", user_name: "T.J." })).json();
+  assert.equal((await viewerPoll(room.code)).status, 200);
+  let s = await status(room.code);
+  assert.equal(s.viewer_connected, true);
+  assert.ok(s.viewer_last_seen, "last seen is recorded");
+  await sleep(1800); // > AGENT_ROOM_VIEWER_ACTIVE_MS
+  s = await status(room.code);
+  assert.equal(s.viewer_connected, false, "no poll for a while means not connected");
+  assert.ok(s.viewer_last_seen, "but the last-seen time is kept");
+});
+
+test("an agent poll, even one that claims viewer=1, does not count as the human", async () => {
+  const room = await (await api("POST", "/api/rooms", { title: "p3", name: "Chair", user_name: "T.J." })).json();
+  await api("GET", `/api/rooms/${room.code}/messages?name=Chair&wait=0`);
+  await api("GET", `/api/rooms/${room.code}/messages?name=Chair&wait=0&viewer=1`);
+  await api("GET", `/api/rooms/${room.code}/messages?after=0&wait=0`); // nameless but not the viewer
+  assert.equal((await status(room.code)).viewer_connected, false);
+});
+
+test("a closed tab does not extend its own presence by its last long-poll", async () => {
+  const room = await (await api("POST", "/api/rooms", { title: "p4", name: "Chair", user_name: "T.J." })).json();
+  const controller = new AbortController();
+  const pending = fetch(`${BASE}/api/rooms/${room.code}/messages?after=999&wait=3&viewer=1`, { signal: controller.signal }).catch(() => {});
+  await sleep(200);
+  controller.abort(); // the tab closes mid-poll
+  await pending;
+  // The server's wait ends 3s after the poll began. Look just after that, while a stamp
+  // wrongly renewed at the end of the wait (window 1.5s) would still be fresh; the stamp
+  // from the poll's start is long expired by then.
+  await sleep(3400);
+  assert.equal((await status(room.code)).viewer_connected, false);
+});
+
+test("an ask reports viewer state, starts unseen, and is marked seen only for the ids reported", async () => {
+  const room = await (await api("POST", "/api/rooms", { title: "p5", name: "Chair", user_name: "T.J." })).json();
+  const a1 = await (await api("POST", `/api/rooms/${room.code}/ask`, { name: "Sol", content: "first?" })).json();
+  const a2 = await (await api("POST", `/api/rooms/${room.code}/ask`, { name: "Sol", content: "second?" })).json();
+  assert.equal(a1.viewer_name, "T.J.");
+  assert.equal(a1.viewer_connected, false);
+  assert.equal(a1.ask.seen_at, undefined);
+  const seen = await (await api("POST", `/api/rooms/${room.code}/asks/seen`, { ids: [a1.ask.id, 99999, "x"] })).json();
+  const byId = Object.fromEntries(seen.asks.map((a) => [a.id, a]));
+  assert.ok(byId[a1.ask.id].seen_at, "reported ask is marked seen");
+  assert.equal(byId[a2.ask.id].seen_at, undefined, "unreported ask stays unseen");
+  const first = byId[a1.ask.id].seen_at;
+  await sleep(1100);
+  const again = await (await api("POST", `/api/rooms/${room.code}/asks/seen`, { ids: [a1.ask.id] })).json();
+  assert.equal(again.asks.find((a) => a.id === a1.ask.id).seen_at, first, "seen time is not overwritten");
+  assert.equal((await status(room.code)).asks.find((a) => a.id === a1.ask.id).seen_at, first, "agents read it from status");
+});
+
+test("seen does not change what agents are woken by", async () => {
+  const room = await (await api("POST", "/api/rooms", { title: "p6", name: "Chair", user_name: "T.J." })).json();
+  const a = await (await api("POST", `/api/rooms/${room.code}/ask`, { name: "Sol", content: "q?" })).json();
+  const before = (await status(room.code)).latest_message_id;
+  await api("POST", `/api/rooms/${room.code}/asks/seen`, { ids: [a.ask.id] });
+  assert.equal((await status(room.code)).latest_message_id, before, "no new message id");
+});
+
+test("an @-mention send returns the ask it raised and the viewer state", async () => {
+  const room = await (await api("POST", "/api/rooms", { title: "p7", name: "Chair", user_name: "T.J." })).json();
+  const plain = await (await api("POST", `/api/rooms/${room.code}/messages`, { name: "Sol", content: "no mention" })).json();
+  assert.equal(plain.ask, undefined);
+  const mention = await (await api("POST", `/api/rooms/${room.code}/messages`, { name: "Sol", content: "@T.J. milestone reached" })).json();
+  assert.ok(mention.ask && mention.ask.implicit);
+  assert.equal(mention.viewer_name, "T.J.");
+  assert.equal(mention.viewer_connected, false);
+});
+
+test("CLI join, status, ask and send print the viewer's name and connection state", async () => {
+  const created = await cli("create", "--title", "cli", "--name", "Chair", "--user-name", "T.J.");
+  const code = /rooms\/(AM-[A-Z0-9]+)/.exec(created.out)[1];
+
+  let r = await cli("join", code, "--name", "Sol");
+  assert.match(r.out, /Human: T\.J\. is NOT connected \(viewer not opened since the server started\)/);
+  assert.match(r.out, /mention as @T\.J\./);
+  assert.match(r.out, /Viewer URL: .*\/rooms\/AM-/);
+
+  r = await cli("ask", code, "--name", "Sol", "Approve the plan?");
+  const askId = Number(/Asked #(\d+)/.exec(r.out)[1]);
+  assert.match(r.out, /T\.J\. is NOT connected/);
+  assert.match(r.out, /invisible to them until they open/);
+
+  r = await cli("status", code);
+  assert.match(r.out, /Human: T\.J\. is NOT connected/);
+  assert.match(r.out, /Open asks in the tray:\n- #\d+ from Sol: NOT seen yet/);
+
+  await viewerPoll(code);
+  r = await cli("status", code);
+  assert.match(r.out, /Human: T\.J\. is connected \(viewer last active \d+s ago; mention as @T\.J\.\)/);
+
+  r = await cli("send", code, "--name", "Sol", "--message", "@T.J. quick status");
+  assert.match(r.out, /now ask #\d+ in their Needs-you tray\. T\.J\. is connected \(viewer last active/);
+
+  await api("POST", `/api/rooms/${code}/asks/seen`, { ids: [askId] });
+  r = await cli("status", code);
+  assert.match(r.out, /from Sol: seen \d+s ago/);
 });
