@@ -82,8 +82,11 @@ const waiters = new Map();
 // it is open. The viewer's long-poll sends ?viewer=1; each poll stamps the room here.
 // Kept in memory on purpose: a stamp lands every few seconds and must not rewrite
 // rooms.json. A restart forgets it, and the open viewer re-stamps within one poll.
-// "Connected" = stamped within VIEWER_ACTIVE_MS (a poll lasts <=25s, so 60s tolerates one slow cycle).
-const VIEWER_ACTIVE_MS = Math.max(1, Number(process.env.AGENT_ROOM_VIEWER_ACTIVE_MS) || 60000);
+// "Connected" = stamped within VIEWER_ACTIVE_MS. 15 minutes by T.J.'s call: he can step away for
+// a while and still be involved, so a short window would send false "not connected" nudges.
+// The cost is that a tab closed a few minutes ago still reads connected; the CLI says when the
+// viewer was last active so an agent can see that.
+const VIEWER_ACTIVE_MS = Math.max(1, Number(process.env.AGENT_ROOM_VIEWER_ACTIVE_MS) || 15 * 60000);
 const viewerSeen = new Map();
 const touchViewer = (code) => viewerSeen.set(code, Date.now());
 function viewerPresence(room) {
@@ -1186,13 +1189,14 @@ function ago(iso) {
   return minutes < 90 ? `${minutes}m ago` : `${Math.round(minutes / 60)}h ago`;
 }
 
-// One sentence on whether the human can see the Needs-you tray right now. "Connected" means
-// their browser viewer polled within the last minute; it is NOT the same as being in the
-// participant list (that only means they have typed once). The viewer stamp lives in server
-// memory, so after a server restart "not opened" can also mean "not since the restart".
+// One sentence on whether the human is involved. "Connected" means their browser viewer polled
+// within the active window (15 minutes by default), so it can still say connected for a few
+// minutes after a tab closed; the "last active" age shows how fresh it is. It is NOT the same as
+// being in the participant list (that only means they have typed once). The stamp lives in
+// server memory, so after a restart "not opened" can also mean "not since the restart".
 function viewerLine(info) {
   const name = info.viewer_name || "User";
-  if (info.viewer_connected) return `${name} has the viewer open now (mention as @${name}).`;
+  if (info.viewer_connected) return `${name} is connected (viewer last active ${ago(info.viewer_last_seen)}; mention as @${name}).`;
   const when = info.viewer_last_seen ? `viewer last seen ${ago(info.viewer_last_seen)}` : "viewer not opened since the server started";
   return `${name} is NOT connected (${when}); the Needs-you tray is invisible to them until they open ${info.viewer_url} (mention as @${name}).`;
 }

@@ -245,10 +245,10 @@ test("CLI join, status, ask and send print the viewer's name and connection stat
 
   await viewerPoll(code);
   r = await cli("status", code);
-  assert.match(r.out, /Human: T\.J\. has the viewer open now \(mention as @T\.J\.\)/);
+  assert.match(r.out, /Human: T\.J\. is connected \(viewer last active \d+s ago; mention as @T\.J\.\)/);
 
   r = await cli("send", code, "--name", "Sol", "--message", "@T.J. quick status");
-  assert.match(r.out, /now ask #\d+ in their Needs-you tray\. T\.J\. has the viewer open now/);
+  assert.match(r.out, /now ask #\d+ in their Needs-you tray\. T\.J\. is connected \(viewer last active/);
 
   await api("POST", `/api/rooms/${code}/asks/seen`, { ids: [askId] });
   r = await cli("status", code);

@@ -191,8 +191,8 @@ The tray exists only inside the browser viewer. If the human has not opened the 
 
 | Line says | Means |
 |---|---|
-| `has the viewer open now` | Their browser polled the room within the last minute. The tray can be seen. |
-| `NOT connected (viewer last seen 14m ago)` | The viewer was open before and is closed now. The tray is invisible to them. |
+| `is connected (viewer last active 40s ago)` | Their browser polled the room within the last 15 minutes. They are treated as involved even if they stepped away, so the tray will be there when they return. The age shows how recent: seconds means the tab is open now, several minutes means it may have been closed. |
+| `NOT connected (viewer last seen 22m ago)` | Nothing from their browser for over 15 minutes. The tray is invisible to them. |
 | `NOT connected (viewer not opened since the server started)` | They have not opened it, or the server restarted since. The tray is invisible to them. |
 
 This is not the participant list. A human appears there once they have typed or answered, and stays after closing the tab, so never read presence from it.
