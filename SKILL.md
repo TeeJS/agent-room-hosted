@@ -45,6 +45,8 @@ Optionally persist the human viewer's name:
 
 **The human does not read the room stream either.** They watch only the **Needs you** tray. Anything posted with plain `send` is a record for agents and for later review; assume the human never sees it. If the human must read, decide, or acknowledge something — including another agent's finding you think they should know about — put it in the tray: use `ask` for a question or approval, or `@`-mention them in a `send` for something they must read (see *Ask the human*). A message that does neither has not reached the human.
 
+**For an artifact or design the human needs to review, put a browser URL they can open in the Needs-you entry.** Attachments in the room can supplement that URL, but do not replace it. Present only the screens, findings, and questions needed for the current decision; keep the full plan or source document elsewhere. A local path or an agent-only artifact is not a review link. Check that the URL is accessible to the human when possible.
+
 ## Critical execution rule
 
 **A request to join a room authorizes active participation immediately.** Read the transcript, respond to pending requests, carry out your agreed work, and continue listening in the same session. Do not stop after introducing yourself or require the user to separately say "attend", "listen", or "participate". Room membership alone is not attendance.
@@ -70,6 +72,8 @@ For room creation, deliver the full invitation promptly (heading, blank line, UR
 The room is the progress record. Post **START before every work step** and **END immediately after it**, including read-only checks, reviews, edits, validation, unchanged results, failures, and blockers — every agent, for every work step it performs (in addressed-only mode, the steps it was asked to do). The human may watch live or review the transcript afterwards to see what was done, so a step missing from the room is a step that did not happen as far as they can tell. Do not wait until you think a result is worth showing, and do not skip reports because nobody seems to be reading. Host-chat commentary does not replace a room update.
 
 START and END are records, not requests: post them with plain `send` and do not `@`-mention the human in them. If an END contains something the human must act on or know, add a separate `ask` or `@`-mention for that one point.
+
+For long work, the agent the human put in charge sends a short Needs-you status at a meaningful milestone or when work runs longer than expected: what is done, what remains, and whether the human needs to act. Stream-only START/END reports do not serve as human updates. The room creator is not automatically the work lead.
 
 Use a concrete work step, not every shell invocation or idle poll, as the reporting unit. START states the scope and intended check; END states the result, evidence, limitations, and handoff if needed. Do not turn a single completed acknowledgement into artificial START/END work. Respect addressed-only mode as above and any explicit reporting instructions from the human.
 
@@ -176,6 +180,8 @@ Agents post faster than a person reads, so a question buried in the stream is a 
 Then keep listening the way your host does (the background watcher in Claude Code; foreground `listen` polls in Codex, as described under *Wait for messages*). The answer arrives as a `human` message marked `[answer to your ask #N]`, and the guidance line says to act on it; that marker wakes you even in addressed-only mode. Do not re-ask in the stream, and do not post the same question with `send` as well.
 
 **To make the human read something that is not a question, `@`-mention them in a `send`.** Any agent message that @-mentions the human viewer by their exact, full viewer name as shown by `join` or `status` (e.g. `@T.J.`; `@` required, merely naming them does not count) lands in the tray, tagged *mentioned you*. Use it for anything they must see or acknowledge: a finding that changes the plan, a correction to something they were told, a risk, a "shipped / needs your update" notice. This is also the fallback that catches a forgotten `ask`. A reply sent from the tray carries the `[answer to your ask #N]` marker either way; only a freeform reply typed into the transcript lacks it, and the human may also press Done without replying. Use `ask` when you need an answer, so the question is unmistakable.
+
+**One question or milestone gets one concise tray entry from one agent.** Coordinate before posting, inspect the latest tray-directed messages, and do not repeat another agent's ask or status. Keep the decision or result to a line or two; put background detail in the room stream.
 
 **`@`-mention the human only when they need to see it.** Every `@` becomes a tray entry they must clear, so do not `@` them in greetings, acknowledgements, START/END reports or routine status. But never leave something they must know un-mentioned on the assumption that they read the stream: they do not.
 
