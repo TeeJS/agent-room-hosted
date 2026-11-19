@@ -254,3 +254,66 @@ test("CLI join, status, ask and send print the viewer's name and connection stat
   r = await cli("status", code);
   assert.match(r.out, /from Sol: seen \d+s ago/);
 });
+
+// ---- Viewer escaping (v0.11.1) ---------------------------------------------------
+// The viewer builds HTML strings from room data and assigns them to innerHTML, with
+// values placed inside double-quoted attributes (data-name, title, alt, download,
+// placeholder). Its esc() used to be the DOM text-serialization trick, which leaves
+// quotes alone, so a participant name or attachment filename containing a double quote
+// could add attributes such as onerror to the element. These tests pin the fix: esc()
+// escapes all five HTML-significant characters, and no room-data value reaches the
+// markup without passing through it.
+
+async function viewerScript(code) {
+  const html = await (await fetch(`${BASE}/rooms/${code}`)).text();
+  const script = /<script>([\s\S]*)<\/script>/.exec(html);
+  assert.ok(script, "viewer page has an inline script");
+  return script[1];
+}
+
+test("the viewer's esc() escapes quotes as well as angle brackets and ampersands", async () => {
+  const room = await (await api("POST", "/api/rooms", { title: "esc", name: "Chair" })).json();
+  const evilName = 'x" autofocus onfocus="alert(1)';
+  await api("POST", `/api/rooms/${room.code}/join`, { name: evilName });
+  const script = await viewerScript(room.code);
+  // The definition contains semicolons inside its entity strings, so it is cut at the
+  // statement that follows it rather than at the first ";".
+  const definition = /const esc=(s=>.*?);const colorFor=/.exec(script);
+  assert.ok(definition, "esc definition not found in the viewer script");
+  const esc = new Function(`return (${definition[1]});`)();
+  assert.equal(esc(`<>&"'`), "&lt;&gt;&amp;&quot;&#39;");
+  assert.equal(esc(evilName), "x&quot; autofocus onfocus=&quot;alert(1)");
+  assert.equal(esc(null), "");
+  assert.equal(esc(undefined), "");
+  assert.equal(esc(42), "42");
+  // Escaping "&" first means an already-escaped value is not double-decoded into markup.
+  assert.equal(esc("&quot;"), "&amp;quot;");
+});
+
+test("the viewer has no DOM-serialization escaper and no unescaped room-data interpolation", async () => {
+  const room = await (await api("POST", "/api/rooms", { title: "esc2", name: "Chair" })).json();
+  const script = await viewerScript(room.code);
+  assert.doesNotMatch(script, /textContent=s;return \w+\.innerHTML/, "the quote-blind escaper is back");
+  assert.match(script, /const e2=esc;/, "the export helper must reuse esc");
+  assert.doesNotMatch(script, /'\+a\.id\+'/, "ask ids must go through esc");
+  assert.doesNotMatch(script, /--person:'\+\(/, "participant colors must go through esc");
+});
+
+test("a hostile participant name and attachment filename are stored as data, not rewritten", async () => {
+  const room = await (await api("POST", "/api/rooms", { title: "esc3", name: "Chair" })).json();
+  const evilName = 'x" autofocus onfocus="alert(1)';
+  const evilFile = 'a" onerror="alert(1)" b=".png';
+  await api("POST", `/api/rooms/${room.code}/join`, { name: evilName });
+  const upload = await (await api("POST", `/api/rooms/${room.code}/attachments`, {
+    name: "Mallory", filename: evilFile, content_type: "image/png", data_base64: Buffer.from("not an image").toString("base64"),
+  })).json();
+  await api("POST", `/api/rooms/${room.code}/messages`, { name: "Mallory", content: "see file", attachments: [upload.id] });
+  const stored = await (await api("GET", `/api/rooms/${room.code}`)).json();
+  assert.ok(stored.participants.some((person) => person.name === evilName));
+  assert.equal(stored.messages.at(-1).attachments[0].filename, evilFile);
+  // The server-rendered page embeds room data as JSON inside <script>; a "<" must never
+  // appear raw there, and the hostile strings must not appear outside that JSON.
+  const html = await (await fetch(`${BASE}/rooms/${room.code}`)).text();
+  assert.doesNotMatch(html, /onfocus="alert\(1\)"/);
+  assert.doesNotMatch(html, /onerror="alert\(1\)"/);
+});
