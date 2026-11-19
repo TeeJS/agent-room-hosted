@@ -75,8 +75,35 @@ const ATTACH_TYPES = {
 };
 const ATTACH_EXT_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf", txt: "text/plain", md: "text/markdown", markdown: "text/markdown" };
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
-const VERSION = "0.11.1";
+const VERSION = "0.12.0";
 const waiters = new Map();
+// ---- Viewer lane ----------------------------------------------------------------
+// The app has no login, so by itself it cannot tell the human's browser from an agent:
+// both arrive as plain HTTP. On a hosted server the two come through different proxy
+// lanes (humans behind SSO, agents behind bearer tokens), and that is the only place the
+// difference exists. AGENT_ROOM_VIEWER_SECRET makes the server honour it: the human-lane
+// proxy adds the request header X-Agent-Room-Viewer: <secret>, the agent lane does not,
+// and an agent that invents the header does not know the value. Without the proof,
+// human-only routes answer 403 and the viewer's name cannot be used.
+// Unset (the default) keeps the original localhost-trust behaviour: everything is allowed.
+// It fails closed: secret set but header missing means the human's own viewer gets 403s,
+// which is visible, rather than agents silently keeping the human's powers.
+const VIEWER_SECRET = (process.env.AGENT_ROOM_VIEWER_SECRET || "").trim();
+const VIEWER_HEADER = "x-agent-room-viewer";
+const sha256 = (value) => crypto.createHash("sha256").update(String(value)).digest();
+function fromHuman(request) {
+  if (!VIEWER_SECRET) return true;
+  // Compare digests so neither the length nor the content of the secret leaks through timing.
+  return crypto.timingSafeEqual(sha256(request.headers[VIEWER_HEADER] || ""), sha256(VIEWER_SECRET));
+}
+const HUMAN_ONLY_ERROR = "This action is reserved for the human viewer. The request did not arrive through the human proxy lane (missing or wrong X-Agent-Room-Viewer header).";
+// With the lane enforced, the viewer's name belongs to the human: an agent posting, joining
+// or closing under it would be read as the human by every other participant.
+function usesViewerName(request, room, name) {
+  if (!VIEWER_SECRET || fromHuman(request)) return false;
+  return sameName(name, room.viewer_name) || (room.participants || []).some((person) => person.role === "human" && sameName(person.name, name));
+}
+const viewerNameError = (room, name) => `${name} is the human viewer's name in ${room.code}; agents cannot use it.`;
 // ---- Viewer presence -------------------------------------------------------------
 // The human reads only the browser viewer's Needs-you tray, so agents need to know whether
 // it is open. The viewer's long-poll sends ?viewer=1; each poll stamps the room here.
@@ -439,7 +466,7 @@ async function route(request, response) {
   const parts = url.pathname.split("/").filter(Boolean);
 
   if (request.method === "GET" && url.pathname === "/api/health") {
-    json(response, 200, { ok: true, version: VERSION, url: PUBLIC_URL }); return;
+    json(response, 200, { ok: true, version: VERSION, url: PUBLIC_URL, viewer_lane_enforced: Boolean(VIEWER_SECRET) }); return;
   }
   if (request.method === "GET" && url.pathname === "/") {
     page(response, 200, landingPage()); return;
@@ -479,14 +506,17 @@ async function route(request, response) {
 
   if (request.method === "POST" && parts.length === 2) {
     const body = await readBody(request);
+    const creator = String(body.name || "Host").trim().slice(0, 80) || "Host";
+    const viewerName = String(body.user_name || loadConfig().user_name || "User").trim().slice(0, 80) || "User";
+    if (VIEWER_SECRET && !fromHuman(request) && sameName(creator, viewerName)) {
+      json(response, 400, { error: `The creator's name and the human viewer's name are both "${creator}". Give the agent its own name.` }); return;
+    }
     const room = await withLock(() => {
       const state = loadState();
       let code = makeCode();
       while (state.rooms[code]) code = makeCode();
       const title = String(body.title || "Agent meeting").trim().slice(0, 160) || "Agent meeting";
       const objective = String(body.objective || "Reach a clear, evidence-based conclusion.").trim().slice(0, 4000);
-      const creator = String(body.name || "Host").trim().slice(0, 80) || "Host";
-      const viewerName = String(body.user_name || loadConfig().user_name || "User").trim().slice(0, 80) || "User";
       const newRoom = {
         code, title, objective, status: "open", created_by: creator,
         viewer_name: viewerName,
@@ -548,7 +578,7 @@ async function route(request, response) {
     // Only the browser viewer sends viewer=1 (and never a name). Stamp on arrival and again
     // when the wait ends, but not if the connection already dropped: a closed tab must not
     // extend its own presence by the length of its last long-poll.
-    const fromViewer = url.searchParams.get("viewer") === "1" && !name;
+    const fromViewer = url.searchParams.get("viewer") === "1" && !name && fromHuman(request);
     if (fromViewer) touchViewer(code);
     const unread = (candidate) => candidate.id > after && (!name || candidate.sender.toLowerCase() !== name.toLowerCase());
     let messages = room.messages.filter(unread);
@@ -626,6 +656,13 @@ async function route(request, response) {
 
   if (request.method !== "POST") { json(response, 405, { error: "Method not allowed" }); return; }
 
+  // Human-only routes: everything under /viewer, the tray's /asks/... (seen, answer, dismiss)
+  // and the response-mode toggle. Agents raise asks through /ask, which is not one of these.
+  // /close is checked in its own handler because the room's creator may also close.
+  if ((parts[3] === "viewer" || parts[3] === "asks" || parts[3] === "mode") && !fromHuman(request)) {
+    json(response, 403, { error: HUMAN_ONLY_ERROR }); return;
+  }
+
   // Attachment upload carries base64 bytes, far larger than a normal message, so it is
   // read with a higher body cap and handled before the shared small-cap readBody below.
   if (parts[3] === "attachments" && parts.length === 4) {
@@ -637,6 +674,7 @@ async function route(request, response) {
       throw error;
     }
     const uploader = String(uploadBody.name || room.viewer_name || "User").trim().slice(0, 80) || "User";
+    if (usesViewerName(request, room, uploader)) { json(response, 403, { error: viewerNameError(room, uploader) }); return; }
     if (removedEntry(room, uploader)) { json(response, 403, { error: removedError(room, code, uploader) }); return; }
     const filename = String(uploadBody.filename || "file").trim().slice(0, 200) || "file";
     const contentType = String(uploadBody.content_type || "").trim().toLowerCase();
@@ -671,6 +709,7 @@ async function route(request, response) {
 
   if (parts[3] === "join") {
     const name = String(body.name || "Agent").trim().slice(0, 80) || "Agent";
+    if (usesViewerName(request, room, name)) { json(response, 403, { error: viewerNameError(room, name) }); return; }
     const outcome = await withLock(() => {
       const freshState = loadState();
       const freshRoom = freshState.rooms[code];
@@ -694,6 +733,7 @@ async function route(request, response) {
 
   if (parts[3] === "messages") {
     const name = String(body.name || "Agent").trim().slice(0, 80) || "Agent";
+    if (usesViewerName(request, room, name)) { json(response, 403, { error: viewerNameError(room, name) }); return; }
     const content = String(body.content || "").trim();
     const hasAttachments = Array.isArray(body.attachments) && body.attachments.length > 0;
     if (!content && !hasAttachments) { json(response, 400, { error: "Content or an attachment is required" }); return; }
@@ -721,6 +761,7 @@ async function route(request, response) {
   // "ask" (so it is in the transcript) plus an open entry in room.asks for the tray.
   if (parts[3] === "ask" && parts.length === 4) {
     const name = String(body.name || "Agent").trim().slice(0, 80) || "Agent";
+    if (usesViewerName(request, room, name)) { json(response, 403, { error: viewerNameError(room, name) }); return; }
     const content = String(body.content || "").trim();
     if (!content) { json(response, 400, { error: "Content is required" }); return; }
     const outcome = await withLock(() => {
@@ -909,6 +950,7 @@ async function route(request, response) {
 
   if (parts[3] === "leave") {
     const name = String(body.name || "Agent").trim().slice(0, 80) || "Agent";
+    if (usesViewerName(request, room, name)) { json(response, 403, { error: viewerNameError(room, name) }); return; }
     const outcome = await withLock(() => {
       const freshState = loadState();
       const freshRoom = freshState.rooms[code];
@@ -938,6 +980,11 @@ async function route(request, response) {
       // 403 with guidance, so an over-eager model cannot end a meeting for everyone.
       // A removed name loses every privilege, creator included: "remove" must fully sever control.
       if (freshRoom.status !== "closed" && removedEntry(freshRoom, name)) return { status: 403, body: { error: removedError(freshRoom, code, name) }, changed: false };
+      // Closing under the human's name needs the human lane. The creator's own name still
+      // works from the agent lane (agent names are self-asserted; binding them is a separate matter).
+      if (freshRoom.status !== "closed" && !sameName(name, freshRoom.created_by) && usesViewerName(request, freshRoom, name)) {
+        return { status: 403, body: { error: HUMAN_ONLY_ERROR }, changed: false };
+      }
       const mayClose = sameName(name, freshRoom.created_by) || sameName(name, freshRoom.viewer_name)
         || freshRoom.participants.some((person) => person.role === "human" && sameName(person.name, name));
       if (!mayClose && freshRoom.status !== "closed") {
@@ -1087,6 +1134,9 @@ function startServer() {
   server.listen(PORT, BIND_HOST, () => {
     fs.writeFileSync(PID_PATH, String(process.pid));
     process.stdout.write(`Agent Room ${VERSION} listening on ${BIND_HOST}:${PORT} (public: ${PUBLIC_URL}); transcripts in ${TRANSCRIPT_DIR}\n`);
+    const loopback = /^(127\.0\.0\.1|localhost|::1)$/i.test(BIND_HOST);
+    if (VIEWER_SECRET) process.stdout.write("Viewer lane: enforced (human-only routes need the X-Agent-Room-Viewer header).\n");
+    else if (!loopback) process.stdout.write("Viewer lane: NOT enforced. Any client that can reach this server can act as the human viewer; set AGENT_ROOM_VIEWER_SECRET and add the header on the human proxy host.\n");
   });
   const close = () => server.close(() => {
     try { flushTranscripts(loadState()); } catch {}

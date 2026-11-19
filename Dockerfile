@@ -22,7 +22,9 @@ ENV AGENT_ROOM_HOME=/data \
     AGENT_ROOM_PORT=7331
 # AGENT_ROOM_PUBLIC_URL is supplied at run time (e.g. https://arh.schmitzplex.com).
 # Optional: TZ (transcript folder dates follow it; UTC when unset),
-#           AGENT_ROOM_RETENTION_DAYS (prune closed rooms from rooms.json; 0 = never).
+#           AGENT_ROOM_RETENTION_DAYS (prune closed rooms from rooms.json; 0 = never),
+#           AGENT_ROOM_VIEWER_SECRET (human-only routes then need the X-Agent-Room-Viewer
+#           header that the human-facing proxy host adds; see DEPLOY.md).
 
 EXPOSE 7331
 # Run as root so the app can write to a bind-mounted appdata volume regardless of
