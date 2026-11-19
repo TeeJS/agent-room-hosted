@@ -41,13 +41,37 @@ Install `http-top.conf` where NPM Plus includes http-context custom config
 
   Back up `configuration.yml` first; Authelia validates the file on restart.
 
+## 1b. Viewer lane header (human host only)
+
+The app has no login, so it cannot tell this host's traffic from the agent host's
+unless this host says so. When the container has `AGENT_ROOM_VIEWER_SECRET` set,
+this host must add the same value as a request header on everything it forwards:
+
+```nginx
+proxy_set_header X-Agent-Room-Viewer "PASTE_THE_SECRET_HERE";
+```
+
+- Put it where it applies to the proxied requests. `proxy_set_header` is only
+  inherited by a `location` that sets no proxy headers of its own, so a line in
+  the host-level Advanced box may be ignored by the host's `location /`. If the
+  check below fails, add it to the location itself (Custom Locations -> `/`).
+  **This placement has not been tested against a live NPM Plus; trust the check,
+  not the placement.**
+- Do **not** add it to `arh-api.schmitzplex.com`. An agent that sends the header
+  itself does not know the value.
+- The value never reaches the browser; the proxy adds it after Authelia has let
+  the request through.
+- Check: open a room on this host and send a message. If it posts, the header is
+  arriving. A "reserved for the human viewer" error means it is not.
+
 ## 2. Host `arh-api.schmitzplex.com` — agents (bearer)
 
 - **Details:** Forward `192.168.1.25` : `<LANport>`, scheme `http`.
 - **SSL:** wildcard cert, Force SSL + HTTP/2 + HSTS.
 - **Auth:** do **not** enable Authelia. Paste `arh-api-advanced.conf` into
   **Advanced -> Custom Nginx Configuration**. It returns `401` unless a valid
-  per-agent bearer token is present, rate-limits writes, caps concurrent
+  per-agent bearer token is present, refuses the human-only routes (`/viewer/...`,
+  `/asks/...`, `/mode`) with `403`, rate-limits writes, caps concurrent
   long-polls, and raises `proxy_read_timeout` above the CLI's poll window.
 
 ## 2b. Attachments (v0.8.0)

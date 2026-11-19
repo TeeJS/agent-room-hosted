@@ -317,3 +317,215 @@ test("a hostile participant name and attachment filename are stored as data, not
   assert.doesNotMatch(html, /onfocus="alert\(1\)"/);
   assert.doesNotMatch(html, /onerror="alert\(1\)"/);
 });
+
+// ---- Viewer lane (v0.12.0) -------------------------------------------------------
+// The app has no login, so it cannot tell the human's browser from an agent. With
+// AGENT_ROOM_VIEWER_SECRET set, the human-lane proxy proves itself by adding the header
+// X-Agent-Room-Viewer: <secret>; without it, human-only routes answer 403 and the
+// viewer's name cannot be used. These tests run against a second server started with a
+// secret. sapi() is the agent lane (no header); hapi() is the human lane (correct header).
+
+const SPORT = 7397;
+const SBASE = `http://127.0.0.1:${SPORT}`;
+const SECRET = "test-secret";
+let secureHome;
+let secureServer;
+
+function laneFetch(headers) {
+  return (method, endpoint, body) => fetch(SBASE + endpoint, {
+    method,
+    headers: { ...headers, ...(body ? { "content-type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+}
+const sapi = laneFetch({});
+const hapi = laneFetch({ "x-agent-room-viewer": SECRET });
+
+before(async () => {
+  secureHome = fs.mkdtempSync(path.join(os.tmpdir(), "arh-test-secure-"));
+  secureServer = spawn(process.execPath, [SCRIPT, "serve"], {
+    env: {
+      ...process.env,
+      AGENT_ROOM_HOME: secureHome,
+      AGENT_ROOM_TRANSCRIPT_DIR: path.join(secureHome, "transcripts"),
+      AGENT_ROOM_ATTACH_DIR: path.join(secureHome, "attachments"),
+      AGENT_ROOM_PORT: String(SPORT),
+      AGENT_ROOM_BIND_HOST: "127.0.0.1",
+      AGENT_ROOM_VIEWER_SECRET: SECRET,
+    },
+    stdio: "ignore",
+  });
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    try { if ((await fetch(`${SBASE}/api/health`)).ok) return; } catch {}
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error("secured server did not become healthy");
+});
+
+after(async () => {
+  if (secureServer) secureServer.kill("SIGTERM");
+  try { fs.rmSync(secureHome, { recursive: true, force: true }); } catch {}
+});
+
+async function securedRoom(title) {
+  return (await sapi("POST", "/api/rooms", { title, name: "Chair", user_name: "T.J." })).json();
+}
+
+test("with a viewer secret, human-only routes are refused on the agent lane and work on the human lane", async () => {
+  const room = await securedRoom("s2-routes");
+  const code = room.code;
+  await sapi("POST", `/api/rooms/${code}/join`, { name: "Mallory" });
+
+  // viewer/messages
+  let r = await sapi("POST", `/api/rooms/${code}/viewer/messages`, { content: "hi" });
+  assert.equal(r.status, 403, "viewer/messages must be 403 for agents");
+  r = await hapi("POST", `/api/rooms/${code}/viewer/messages`, { content: "hi" });
+  assert.equal(r.status, 201, "viewer/messages must work for the human");
+
+  // viewer/remove
+  r = await sapi("POST", `/api/rooms/${code}/viewer/remove`, { name: "Mallory" });
+  assert.equal(r.status, 403, "viewer/remove must be 403 for agents");
+  r = await hapi("POST", `/api/rooms/${code}/viewer/remove`, { name: "Mallory" });
+  assert.equal(r.status, 200, "viewer/remove must work for the human");
+
+  // viewer/readmit (Mallory is now removed)
+  r = await sapi("POST", `/api/rooms/${code}/viewer/readmit`, { name: "Mallory" });
+  assert.equal(r.status, 403, "viewer/readmit must be 403 for agents");
+  r = await hapi("POST", `/api/rooms/${code}/viewer/readmit`, { name: "Mallory" });
+  assert.equal(r.status, 200, "viewer/readmit must work for the human");
+
+  // mode
+  r = await sapi("POST", `/api/rooms/${code}/mode`, { addressed_only: true });
+  assert.equal(r.status, 403, "mode must be 403 for agents");
+  r = await hapi("POST", `/api/rooms/${code}/mode`, { addressed_only: false });
+  assert.equal(r.status, 200, "mode must work for the human");
+
+  // asks/seen
+  r = await sapi("POST", `/api/rooms/${code}/asks/seen`, { ids: [1] });
+  assert.equal(r.status, 403, "asks/seen must be 403 for agents");
+  r = await hapi("POST", `/api/rooms/${code}/asks/seen`, { ids: [1] });
+  assert.equal(r.status, 200, "asks/seen must work for the human");
+
+  // asks/<id>/answer
+  const askRoom = await securedRoom("s2-ask");
+  const askResp = await (await sapi("POST", `/api/rooms/${askRoom.code}/ask`, { name: "Mallory", content: "need approval" })).json();
+  const askId = askResp.ask.id;
+
+  r = await sapi("POST", `/api/rooms/${askRoom.code}/asks/${askId}/answer`, { answer: "yes" });
+  assert.equal(r.status, 403, "ask answer must be 403 for agents");
+  r = await hapi("POST", `/api/rooms/${askRoom.code}/asks/${askId}/answer`, { answer: "yes" });
+  assert.equal(r.status, 200, "ask answer must work for the human");
+
+  // asks/<id>/dismiss
+  const askRoom2 = await securedRoom("s2-ask2");
+  const askResp2 = await (await sapi("POST", `/api/rooms/${askRoom2.code}/ask`, { name: "Mallory", content: "need approval 2" })).json();
+  const askId2 = askResp2.ask.id;
+
+  r = await sapi("POST", `/api/rooms/${askRoom2.code}/asks/${askId2}/dismiss`, {});
+  assert.equal(r.status, 403, "ask dismiss must be 403 for agents");
+  r = await hapi("POST", `/api/rooms/${askRoom2.code}/asks/${askId2}/dismiss`, {});
+  assert.equal(r.status, 200, "ask dismiss must work for the human");
+
+  // viewer/leave
+  r = await sapi("POST", `/api/rooms/${code}/viewer/leave`, {});
+  assert.equal(r.status, 403, "viewer/leave must be 403 for agents");
+  r = await hapi("POST", `/api/rooms/${code}/viewer/leave`, {});
+  assert.equal(r.status, 200, "viewer/leave must work for the human");
+
+  // A refused call changes nothing: the forged answer above never became a message.
+  const transcript = await (await sapi("GET", `/api/rooms/${askRoom.code}`)).json();
+  assert.equal(transcript.messages.filter((m) => m.kind === "human").length, 1, "only the human-lane answer is in the transcript");
+});
+
+test("with a viewer secret, an agent cannot join, send, ask or create a room under the viewer's name", async () => {
+  const room = await securedRoom("s2-reserve");
+  const code = room.code;
+  const viewerName = room.viewer_name;
+
+  let r = await sapi("POST", `/api/rooms/${code}/join`, { name: viewerName });
+  assert.equal(r.status, 403, "join as viewer must be 403 for agents");
+
+  r = await sapi("POST", `/api/rooms/${code}/messages`, { name: viewerName, content: "sneaky" });
+  assert.equal(r.status, 403, "send as viewer must be 403 for agents");
+
+  r = await sapi("POST", `/api/rooms/${code}/ask`, { name: viewerName, content: "sneaky ask" });
+  assert.equal(r.status, 403, "ask as viewer must be 403 for agents");
+
+  r = await sapi("POST", "/api/rooms", { title: "sneaky-room", name: viewerName, user_name: viewerName });
+  assert.equal(r.status, 400, "an agent cannot create a room in which it carries the viewer's name");
+
+  r = await sapi("POST", `/api/rooms/${code}/leave`, { name: viewerName });
+  assert.equal(r.status, 403, "leave as viewer must be 403 for agents");
+
+  // Upload attribution: a named upload under the viewer's name, and an unnamed one
+  // (which the server would attribute to the viewer), are both refused.
+  const file = { filename: "a.txt", content_type: "text/plain", data_base64: Buffer.from("x").toString("base64") };
+  r = await sapi("POST", `/api/rooms/${code}/attachments`, { ...file, name: viewerName });
+  assert.equal(r.status, 403, "upload as viewer must be 403 for agents");
+  r = await sapi("POST", `/api/rooms/${code}/attachments`, file);
+  assert.equal(r.status, 403, "an unnamed upload must not be attributed to the viewer");
+  r = await sapi("POST", `/api/rooms/${code}/attachments`, { ...file, name: "Mallory" });
+  assert.equal(r.status, 201, "an agent can still upload under its own name");
+  r = await hapi("POST", `/api/rooms/${code}/attachments`, file);
+  assert.equal(r.status, 201, "the human's unnamed upload still works");
+
+  // The human can still post through hapi.
+  r = await hapi("POST", `/api/rooms/${code}/viewer/messages`, { content: "legit" });
+  assert.equal(r.status, 201, "human viewer can still post through hapi");
+});
+
+test("a wrong X-Agent-Room-Viewer value is refused", async () => {
+  const room = await securedRoom("s2-wrong");
+  const code = room.code;
+  const response = await fetch(`${SBASE}/api/rooms/${code}/viewer/messages`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-agent-room-viewer": "wrong-secret",
+    },
+    body: JSON.stringify({ content: "sneaky" }),
+  });
+  assert.equal(response.status, 403, "wrong secret must be refused");
+});
+
+test("with a viewer secret, the creator can still close from the agent lane but nobody can close as the viewer there", async () => {
+  const room = await securedRoom("s2-close");
+  const code = room.code;
+
+  let r = await sapi("POST", `/api/rooms/${code}/close`, { name: "Chair", summary: "chair closes" });
+  assert.equal(r.status, 200, "close by creator must work for agents");
+  const after = await (await sapi("GET", `/api/rooms/${code}`)).json();
+  assert.equal(after.status, "closed", "room must be closed after creator close");
+
+  const room2 = await securedRoom("s2-close2");
+  const code2 = room2.code;
+  r = await sapi("POST", `/api/rooms/${code2}/close`, { name: room2.viewer_name, summary: "sneaky viewer close" });
+  assert.equal(r.status, 403, "close as viewer must be 403 for agents");
+  const after2 = await (await sapi("GET", `/api/rooms/${code2}`)).json();
+  assert.equal(after2.status, "open", "room must still be open after refused viewer close");
+});
+
+test("with a viewer secret, only the human lane counts as the viewer's presence", async () => {
+  const room = await securedRoom("s2-presence");
+  const code = room.code;
+
+  // Agent polls with viewer=1: must NOT mark the viewer as connected.
+  let r = await sapi("GET", `/api/rooms/${code}/messages?viewer=1`);
+  assert.equal(r.status, 200, "agent viewer=1 poll must not error");
+  assert.equal((await r.json()).viewer_connected, false, "agent viewer=1 must not mark the viewer connected");
+  assert.equal((await (await sapi("GET", `/api/rooms/${code}/status`)).json()).viewer_connected, false);
+
+  // Human polls with viewer=1 through hapi: MUST mark the viewer as connected.
+  r = await hapi("GET", `/api/rooms/${code}/messages?viewer=1`);
+  assert.equal(r.status, 200, "human viewer=1 poll must not error");
+  assert.equal((await r.json()).viewer_connected, true, "human viewer=1 must mark the viewer connected");
+});
+
+test("without a viewer secret nothing is gated, and health reports which mode the server is in", async () => {
+  const room = await (await api("POST", "/api/rooms", { title: "legacy", name: "Chair", user_name: "T.J." })).json();
+  const r = await api("POST", `/api/rooms/${room.code}/viewer/messages`, { content: "local viewer" });
+  assert.equal(r.status, 201, "the local, no-secret server keeps its original behaviour");
+  assert.equal((await (await api("GET", "/api/health")).json()).viewer_lane_enforced, false);
+  assert.equal((await (await sapi("GET", "/api/health")).json()).viewer_lane_enforced, true);
+});

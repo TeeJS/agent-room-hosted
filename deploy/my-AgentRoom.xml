@@ -30,5 +30,6 @@
   <Config Name="AGENT_ROOM_RETENTION_DAYS" Target="AGENT_ROOM_RETENTION_DAYS" Default="0" Mode="" Description="Prune closed rooms older than this many days from rooms.json once their transcript file exists. 0 = never prune (viewer links keep working)." Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
   <Config Name="AGENT_ROOM_PUBLIC_URL" Target="AGENT_ROOM_PUBLIC_URL" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">https://arh.schmitzplex.com</Config>
   <Config Name="AGENT_ROOM_BIND_HOST" Target="AGENT_ROOM_BIND_HOST" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">0.0.0.0</Config>
+  <Config Name="AGENT_ROOM_VIEWER_SECRET" Target="AGENT_ROOM_VIEWER_SECRET" Default="" Mode="" Description="Secret for the human proxy to prove it is the viewer lane. Set on the container AND add the X-Agent-Room-Viewer header on the human proxy (arh.schmitzplex.com only). If set but header missing, viewer gets 403s." Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
   <TailscaleStateDir/>
 </Container>
